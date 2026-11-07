@@ -1,0 +1,5 @@
+/target
+rigrs_settings.json
+*.dll
+*.exe
+*.mp4
