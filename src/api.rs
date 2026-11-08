@@ -838,6 +838,12 @@ fn base_scale(app: &App) -> f32 {
         .unwrap_or(1.0)
 }
 
+/// (VTS size, VTS x) of the model, for spatial audio.
+pub fn model_size_x(app: &App) -> Option<(f32, f32)> {
+    let p = model_position(app)?;
+    Some((p["size"].as_f64()? as f32, p["positionX"].as_f64()? as f32))
+}
+
 fn model_position(app: &App) -> Option<Value> {
     let a = app.avatar.as_ref()?;
     let (vw, vh) = app.viewport();

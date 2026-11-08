@@ -223,16 +223,24 @@ impl Keys {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+/// One hotkey sound slot (VTS: up to 10 per hotkey, each with its own sound list and settings).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct SoundSlot {
+    #[serde(flatten)]
+    pub params: crate::audio::SoundParams,
+    /// Older rigrs format (one file per slot).
     pub file: String,
     pub volume: f32,
 }
 
-impl Default for SoundSlot {
-    fn default() -> Self {
-        SoundSlot { file: String::new(), volume: 1.0 }
+impl SoundSlot {
+    pub fn params(&self) -> crate::audio::SoundParams {
+        let mut p = self.params.clone();
+        if p.files.is_empty() && !self.file.is_empty() {
+            p.files.push(crate::audio::SoundFile { file: self.file.clone(), volume: if self.volume > 0.0 { self.volume } else { 1.0 }, pitch: 1.0 });
+        }
+        p
     }
 }
 
@@ -348,7 +356,7 @@ pub const ACTIONS: &[(&str, &str, bool, bool)] = &[
     ("LoadEffectPreset", "Загрузить пресет эффектов", true, true),
     ("ToggleLive2DEditorAPI", "Синхронизация параметров с Live2D Editor API", true, false),
     ("WebItemAction", "Запустить действие веб-элемента", false, false),
-    ("ToggleModelSound", "Toggle Model Volume", false, false),
+    ("ToggleModelSound", "Вкл./выкл. звук модели", true, false),
     ("ToggleUI", "Показать/скрыть интерфейс (rigrs)", true, false),
 ];
 
@@ -621,9 +629,6 @@ pub struct Runtime {
     pub color_preset: Option<(String, Vec<crate::artmesh::IdValue>)>,
     /// Followers seen this session (repeated follow filter).
     pub followers: HashSet<String>,
-    /// Sounds currently playing (MCI aliases).
-    sounds: Vec<(String, String)>,
-    sound_seq: u32,
 }
 
 impl App {
@@ -1043,6 +1048,12 @@ pub fn trigger(app: &mut App, id_or_name: &str, src: Source) -> bool {
                 app.toast(format!("Live2D-предмет для действия «{}» не загружен", h.file));
             }
         }
+        "ToggleModelSound" => {
+            if let Some(k) = app.model_key() {
+                let ms = app.settings.model_sound.entry(k).or_default();
+                ms.muted = !ms.muted;
+            }
+        }
         "ReloadMicrophone" => {
             // VTS: reloads the microphone (or turns it on when it is off).
             app.set_mic(true);
@@ -1130,55 +1141,65 @@ fn deactivate(app: &mut App, id: &str) {
     }
 }
 
-// ------------------------------------------------------------------ sounds (MCI: wav/mp3)
-
-#[cfg(windows)]
-fn mci(cmd: &str) {
-    let w: Vec<u16> = cmd.encode_utf16().chain(Some(0)).collect();
-    unsafe {
-        let _ = windows::Win32::Media::Multimedia::mciSendStringW(windows::core::PCWSTR(w.as_ptr()), None, None);
-    }
-}
-
-#[cfg(not(windows))]
-fn mci(_cmd: &str) {}
+// ------------------------------------------------------------------ sounds
 
 pub fn sounds_dir(app: &App) -> std::path::PathBuf {
     app.paths.data.join("Sounds")
+}
+
+/// Finds a sound file: absolute path, the model / item folder (and subfolders, as in VTS),
+/// then rigrs' Sounds folder.
+pub fn resolve_sound(dirs: &[std::path::PathBuf], data_sounds: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    let p = std::path::Path::new(name);
+    if p.is_absolute() {
+        return p.exists().then(|| p.to_path_buf());
+    }
+    for d in dirs {
+        let direct = d.join(name);
+        if direct.exists() {
+            return Some(direct);
+        }
+        let mut stack = vec![d.clone()];
+        let fname = p.file_name()?;
+        let mut seen = 0;
+        while let Some(x) = stack.pop() {
+            seen += 1;
+            if seen > 400 {
+                break;
+            }
+            for e in std::fs::read_dir(&x).ok()?.flatten() {
+                let q = e.path();
+                if q.is_dir() {
+                    stack.push(q);
+                } else if q.file_name() == Some(fname) {
+                    return Some(q);
+                }
+            }
+        }
+    }
+    let d = data_sounds.join(name);
+    d.exists().then_some(d)
 }
 
 fn play_sounds(app: &mut App, h: &Hotkey) {
     if !h.sound_config.sound_active || h.sound_config.sound_slots.is_empty() {
         return;
     }
-    let dir = sounds_dir(app);
-    for s in &h.sound_config.sound_slots {
-        let p = if std::path::Path::new(&s.file).is_absolute() { std::path::PathBuf::from(&s.file) } else { dir.join(&s.file) };
-        if !p.exists() {
-            continue;
-        }
-        app.hk.sound_seq += 1;
-        let alias = format!("rigrs{}", app.hk.sound_seq);
-        mci(&format!("open \"{}\" type mpegvideo alias {alias}", p.display()));
-        mci(&format!("setaudio {alias} volume to {}", (s.volume.clamp(0.0, 1.0) * 1000.0) as i32));
-        mci(&format!("play {alias}"));
-        app.hk.sounds.push((h.id.clone(), alias));
-    }
-    // Close finished ones lazily (keep the list short).
-    if app.hk.sounds.len() > 32 {
-        let old: Vec<_> = app.hk.sounds.drain(..16).collect();
-        for (_, a) in old {
-            mci(&format!("close {a}"));
+    let dirs: Vec<std::path::PathBuf> = app.avatar.as_ref().map(|a| vec![a.dir.clone()]).unwrap_or_default();
+    let data = sounds_dir(app);
+    let (gain, pan) = app.model_sound_gain();
+    for slot in h.sound_config.sound_slots.iter().take(10) {
+        let params = slot.params();
+        if let Some(req) = crate::audio::request(&params, |n| resolve_sound(&dirs, &data, n), &h.id, gain, 1.0, pan) {
+            app.play_sound(req);
         }
     }
 }
 
 fn stop_sounds(app: &mut App, id: &str) {
-    let (stop, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut app.hk.sounds).into_iter().partition(|s| s.0 == id);
-    app.hk.sounds = keep;
-    for (_, a) in stop {
-        mci(&format!("stop {a}"));
-        mci(&format!("close {a}"));
+    let fade = app.hotkeys().iter().find(|h| h.id == id).map(|h| h.sound_config.stop_fade_out_seconds).unwrap_or(0.5);
+    if let Some(a) = &app.audio {
+        a.stop(id, fade);
     }
 }
 

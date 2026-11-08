@@ -246,6 +246,7 @@ pub struct VtubeJson {
     pub model_id: String,
     pub hotkeys: Vec<crate::hotkeys::Hotkey>,
     pub art_mesh_details: Option<crate::artmesh::ArtMeshDetails>,
+    pub general_settings: Option<serde_json::Value>,
     pub file_references: VtubeFiles,
     pub parameter_settings: Vec<VtubeParam>,
     pub physics_settings: Option<VtubePhysics>,

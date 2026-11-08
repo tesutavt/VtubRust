@@ -25,6 +25,7 @@ rfd = "0.15"
 tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 ureq = { version = "2.10", features = ["json"] }
 base64 = "0.22"
+symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "mp3", "ogg", "vorbis"] }
 
 [target.'cfg(windows)'.dependencies]
 hidapi = { version = "2.6", default-features = false, features = ["windows-native"] }
@@ -43,7 +44,6 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Gdi",
     "Win32_Storage_Xps",
     "Win32_Media_MediaFoundation",
-    "Win32_Media_Multimedia",
     "Win32_Media_Audio",
     "Win32_UI_Input_XboxController",
     "Win32_Devices_FunctionDiscovery",

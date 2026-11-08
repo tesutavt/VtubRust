@@ -154,6 +154,8 @@ pub struct App {
     pub mic: Option<crate::lipsync::Mic>,
     pub mic_devices: Vec<(String, String)>,
     pub pads: crate::controller::Controllers,
+    pub audio: Option<crate::audio::Audio>,
+    pub sfx_rt: crate::sfx::Runtime,
     /// Name of the loaded effect preset ("" = none).
     pub vfx_preset: String,
     /// Effect fade: (from, to, elapsed, duration).
@@ -325,6 +327,8 @@ impl App {
             mic: None,
             mic_devices: Vec::new(),
             pads: Default::default(),
+            audio: None,
+            sfx_rt: Default::default(),
             vfx_preset: String::new(),
             vfx_fade: None,
             editor: None,
@@ -635,6 +639,12 @@ impl App {
                 self.settings.last_model = Some(key);
                 self.active_scene = None;
                 crate::hotkeys::on_model_loaded(self);
+                if let Some(key) = self.model_key() {
+                    if !self.settings.model_sound.contains_key(&key) {
+                        let vol = e.vtube.as_ref().and_then(|p| crate::formats::read_json::<crate::formats::VtubeJson>(p).ok()).and_then(|v| v.general_settings).and_then(|g| g["ModelVolume"].as_f64()).unwrap_or(90.0);
+                        self.settings.model_sound.insert(key, crate::sfx::ModelSound { volume: vol as f32, ..Default::default() });
+                    }
+                }
                 self.apply_artmesh();
                 self.save();
             }
@@ -690,6 +700,9 @@ impl App {
         match self.make_item(source) {
             Ok(it) => {
                 let id = it.id;
+                if source.to_string_lossy().ends_with(".model3.json") {
+                    self.item_sound(source, true);
+                }
                 self.items.push(it);
                 Some(id)
             }
@@ -1073,6 +1086,82 @@ impl App {
         }
     }
 
+    /// Plays a sound (starts the engine on first use).
+    pub fn play_sound(&mut self, p: crate::audio::Play) {
+        if self.audio.is_none() {
+            self.audio = Some(crate::audio::Audio::start(&self.settings.sound));
+        }
+        if let Some(a) = &self.audio {
+            a.play(p);
+        }
+    }
+
+    /// Model volume × spatial volume, and spatial pan, for the current model.
+    pub fn model_sound_gain(&self) -> (f32, f32) {
+        let Some(key) = self.model_key() else { return (1.0, 0.0) };
+        let ms = self.settings.model_sound.get(&key).cloned().unwrap_or_default();
+        let (size, x) = crate::api::model_size_x(self).unwrap_or((0.0, 0.0));
+        let (v, pan) = ms.spatial(size, x);
+        (ms.gain() * v, pan)
+    }
+
+    /// Parameter sound triggers of the model and Live2D items (VTS parameter sound triggers).
+    fn update_sfx(&mut self, dt: f32) {
+        let data = self.paths.data.join("Sounds");
+        let mut plays = Vec::new();
+        // (key, model3, dir, ids, values, mins, maxs, gain, pan)
+        let mut models = Vec::new();
+        if let Some(a) = &self.avatar {
+            let key = a.model3.to_string_lossy().into_owned();
+            let (g, pan) = self.model_sound_gain();
+            models.push((key, a.dir.clone(), a.model.param_ids.clone(), a.model.params().to_vec(), a.model.param_min.clone(), a.model.param_max.clone(), g, pan));
+        }
+        for it in &self.items {
+            if let crate::scene::Body::Live2D(l) = &it.body {
+                let key = l.model3.to_string_lossy().into_owned();
+                let g = self.settings.model_sound.get(&key).map(|m| m.gain()).unwrap_or(0.9) * it.alpha;
+                let (vw, _) = self.viewport();
+                models.push((key, l.dir.clone(), l.model.param_ids.clone(), l.model.params().to_vec(), l.model.param_min.clone(), l.model.param_max.clone(), g, (it.xf.pos[0] / (vw / 2.0)).clamp(-1.0, 1.0) * 0.5));
+            }
+        }
+        for (key, dir, ids, vals, mins, maxs, gain, pan) in models {
+            let Some(ms) = self.settings.model_sound.get(&key) else { continue };
+            if ms.triggers.is_empty() {
+                continue;
+            }
+            let fired = crate::sfx::evaluate(&mut self.sfx_rt, &key, ms, &ids, &vals, &mins, &maxs, dt);
+            for (ti, speed) in fired {
+                let t = &ms.triggers[ti];
+                let lerp = |r: [f32; 2]| r[0] + (r[1] - r[0]) * speed;
+                let v = if t.speed_to_volume { lerp(t.speed_to_volume_range) } else { 1.0 };
+                let p = if t.speed_to_pitch { lerp(t.speed_to_pitch_range) } else { 1.0 };
+                let dirs = vec![dir.clone()];
+                if let Some(req) = crate::audio::request(&t.sound, |n| crate::hotkeys::resolve_sound(&dirs, &data, n), &key, gain * v, p, pan) {
+                    plays.push(req);
+                }
+            }
+        }
+        for p in plays {
+            self.play_sound(p);
+        }
+        if let Some(a) = &self.audio {
+            a.set_cfg(&self.settings.sound);
+        }
+    }
+
+    /// Item load / delete sounds of a Live2D item (VTS "Item load sound" / "Item delete sound").
+    pub fn item_sound(&mut self, model3: &Path, load: bool) {
+        let key = model3.to_string_lossy().into_owned();
+        let Some(ms) = self.settings.model_sound.get(&key).cloned() else { return };
+        let dirs = vec![model3.parent().map(|p| p.to_path_buf()).unwrap_or_default()];
+        let data = self.paths.data.join("Sounds");
+        for t in ms.triggers.iter().filter(|t| t.active && if load { t.item_load_sound } else { t.item_delete_sound }) {
+            if let Some(req) = crate::audio::request(&t.sound, |n| crate::hotkeys::resolve_sound(&dirs, &data, n), &key, ms.gain(), 1.0, 0.0) {
+                self.play_sound(req);
+            }
+        }
+    }
+
     pub fn set_mic(&mut self, on: bool) {
         self.settings.mic.on = on;
         self.mic = None;
@@ -1341,6 +1430,7 @@ impl App {
         self.update_twitch();
         self.update_editor();
         self.update_vfx_fade(dt);
+        self.update_sfx(dt);
         if let Some(a) = self.avatar.as_mut() {
             a.glitch = if self.settings.vfx_on { crate::vfx::model_glitch(&self.settings.vfx) } else { [0.0; 3] };
         }
@@ -1727,7 +1817,14 @@ impl App {
                     self.ui.selected = Some(id);
                 }
             }
-            Action::RemoveItem(id) => self.items.retain(|i| i.id != id),
+            Action::RemoveItem(id) => {
+                if let Some(src) = self.items.iter().find(|i| i.id == id).map(|i| i.source.clone()) {
+                    if src.to_string_lossy().ends_with(".model3.json") {
+                        self.item_sound(&src, false);
+                    }
+                }
+                self.items.retain(|i| i.id != id);
+            }
             Action::ClearItems => self.items.clear(),
             Action::SetBackground(b) => {
                 let name = match &b {

@@ -8,6 +8,8 @@ mod api;
 mod api_events;
 mod artmesh;
 mod app;
+mod audio;
+mod sfx;
 mod controller;
 mod cubism_editor;
 mod hotkeys;

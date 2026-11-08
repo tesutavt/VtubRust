@@ -199,6 +199,10 @@ pub struct Settings {
     pub mic: crate::lipsync::MicCfg,
     /// Controller input: 0 = no controller, 1 = all controllers, 2 = the selected one.
     pub controller_mode: u8,
+    /// Sound effects output (VTS "Sound effects" card).
+    pub sound: crate::audio::SoundCfg,
+    /// Per-model sound settings (volume, spatial audio, parameter sound triggers).
+    pub model_sound: HashMap<String, crate::sfx::ModelSound>,
     pub controller_id: String,
     /// VTS effect values by config enum ID (VTS EffectConfigs). Old-format "vfx" data is ignored.
     #[serde(rename = "vfx_vts")]
@@ -318,6 +322,8 @@ impl Default for Settings {
             vfx_restricted: false,
             mic: Default::default(),
             controller_mode: 0,
+            sound: Default::default(),
+            model_sound: HashMap::new(),
             controller_id: String::new(),
             vfx: Default::default(),
             smooth_masks: false,

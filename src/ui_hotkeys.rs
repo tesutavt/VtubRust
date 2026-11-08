@@ -787,50 +787,107 @@ fn twitch_triggers_dialog(app: &mut App, ctx: &Context, i: usize) {
     }
 }
 
+/// Editor for a VTS sound list + randomized playback settings (hotkey slots and triggers).
+pub fn sound_params_ui(ui: &mut egui::Ui, salt: &str, p: &mut crate::audio::SoundParams, dir_hint: &std::path::Path) {
+    let mut del = None;
+    for (k, f) in p.files.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(&f.file).size(14.0));
+            ui.add(egui::DragValue::new(&mut f.volume).speed(0.01).range(0.0..=2.0).prefix(tr("громк. ")));
+            ui.add(egui::DragValue::new(&mut f.pitch).speed(0.01).range(0.1..=3.0).prefix(tr("тон ")));
+            if ui.small_button("🗑").clicked() {
+                del = Some(k);
+            }
+        });
+    }
+    if let Some(k) = del {
+        p.files.remove(k);
+    }
+    if ui.button(tr("+ Добавить звук…")).clicked() {
+        let _ = std::fs::create_dir_all(dir_hint);
+        if let Some(files) = rfd::FileDialog::new().set_directory(dir_hint).add_filter("Audio", &["wav", "mp3", "ogg"]).pick_files() {
+            for f in files {
+                let name = if f.starts_with(dir_hint) { f.strip_prefix(dir_hint).map(|r| r.to_string_lossy().into_owned()).unwrap_or_default() } else { f.to_string_lossy().into_owned() };
+                p.files.push(crate::audio::SoundFile { file: name, ..Default::default() });
+            }
+        }
+    }
+    let range = |ui: &mut egui::Ui, label: &str, r: &mut [f32; 2], lo: f32, hi: f32| {
+        ui.horizontal(|ui| {
+            ui.add_sized([150.0, 18.0], egui::Label::new(tr(label)));
+            ui.add(egui::DragValue::new(&mut r[0]).speed(0.01).range(lo..=hi));
+            ui.label("…");
+            ui.add(egui::DragValue::new(&mut r[1]).speed(0.01).range(lo..=hi));
+        });
+    };
+    egui::CollapsingHeader::new(tr("Параметры воспроизведения")).id_salt((salt, "params")).show(ui, |ui| {
+        range(ui, "Громкость", &mut p.volume, 0.0, 2.0);
+        range(ui, "Высота тона", &mut p.pitch, 0.1, 3.0);
+        range(ui, "Панорама (L…R)", &mut p.pan, -1.0, 1.0);
+        range(ui, "Задержка (сек.)", &mut p.delay, 0.0, 10.0);
+        ui.horizontal(|ui| {
+            ui.label(tr("Эхо: повторов"));
+            ui.add(egui::DragValue::new(&mut p.echo_count).range(0..=8));
+            ui.label(tr("задержка"));
+            ui.add(egui::DragValue::new(&mut p.echo_delay).speed(0.01).range(0.01..=2.0));
+            ui.label(tr("громкость"));
+            ui.add(egui::DragValue::new(&mut p.echo_volume).speed(0.01).range(0.0..=1.0));
+        });
+    });
+}
+
 fn sound_dialog(app: &mut App, ctx: &Context, i: usize) {
     let Some(mut h) = app.hotkeys().get(i).cloned() else {
         app.ui.modal = None;
         return;
     };
     dim(ctx, "snd-dim");
-    let dir = hotkeys::sounds_dir(app);
+    let dir = app.avatar.as_ref().map(|a| a.dir.clone()).unwrap_or_else(|| hotkeys::sounds_dir(app));
     let mut ok = false;
-    let mut open_dir = false;
     let mut test = false;
-    dialog_frame(ctx, "snd-dialog", 620.0, |ui| {
+    let slot_id = egui::Id::new(("snd-slot", i));
+    let mut slot: usize = ctx.data(|d| d.get_temp(slot_id)).unwrap_or(0);
+    dialog_frame(ctx, "snd-dialog", 680.0, |ui| {
         ui.style_mut().visuals.override_text_color = Some(TEXT);
         ui.label(RichText::new(tr("Звук горячей клавиши")).size(24.0));
-        ui.label(RichText::new(tr("Файлы WAV или MP3. Можно положить их в папку Sounds в папке данных.")).size(14.0).weak());
+        ui.label(RichText::new(tr("WAV, MP3 или OGG из папки модели (как в VTS) или из папки Sounds. Из списка каждый раз выбирается случайный файл.")).size(13.0).weak());
         let sc = &mut h.sound_config;
         toggle(ui, &mut sc.sound_active, tr("Проигрывать звук"));
-        toggle(ui, &mut sc.stop_when_inactive, tr("Останавливать звук при выключении горячей клавиши"));
-        let mut del = None;
-        for (k, s) in sc.sound_slots.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(&s.file).size(16.0));
-                ui.add(egui::Slider::new(&mut s.volume, 0.0..=1.0).text(tr("громкость")));
-                if ui.button("🗑").clicked() {
-                    del = Some(k);
+        ui.horizontal(|ui| {
+            toggle(ui, &mut sc.stop_when_inactive, tr("Останавливать звук при выключении горячей клавиши"));
+            ui.add(egui::DragValue::new(&mut sc.stop_fade_out_seconds).speed(0.05).range(0.0..=10.0).suffix(tr(" с")));
+        });
+        // Up to 10 sound slots.
+        ui.horizontal_wrapped(|ui| {
+            for k in 0..10 {
+                let used = sc.sound_slots.get(k).map(|s| !s.params().files.is_empty()).unwrap_or(false);
+                let label = format!("{}{}", k + 1, if used { " ●" } else { "" });
+                if ui.selectable_label(slot == k, label).clicked() {
+                    slot = k;
                 }
-            });
+            }
+        });
+        while sc.sound_slots.len() <= slot {
+            sc.sound_slots.push(Default::default());
         }
-        if let Some(k) = del {
-            sc.sound_slots.remove(k);
+        let s = &mut sc.sound_slots[slot];
+        if s.params.files.is_empty() && !s.file.is_empty() {
+            s.params = s.params();
+            s.file.clear();
+        }
+        egui::ScrollArea::vertical().max_height(ctx.screen_rect().height() - 380.0).show(ui, |ui| {
+            sound_params_ui(ui, &format!("hk{i}-{slot}"), &mut s.params, &dir);
+        });
+        // Drop trailing empty slots.
+        while sc.sound_slots.last().map(|s| s.params.files.is_empty() && s.file.is_empty()).unwrap_or(false) {
+            sc.sound_slots.pop();
         }
         ui.horizontal(|ui| {
-            if ui.button(tr("+ Добавить звук…")).clicked() {
-                let _ = std::fs::create_dir_all(&dir);
-                if let Some(p) = rfd::FileDialog::new().set_directory(&dir).add_filter("Audio", &["wav", "mp3"]).pick_file() {
-                    let f = if p.parent() == Some(dir.as_path()) { p.file_name().unwrap_or_default().to_string_lossy().into_owned() } else { p.to_string_lossy().into_owned() };
-                    sc.sound_slots.push(hotkeys::SoundSlot { file: f, volume: 1.0 });
-                    sc.sound_active = true;
-                }
-            }
-            if ui.button(tr("Открыть папку Sounds")).clicked() {
-                open_dir = true;
-            }
             if ui.button(tr("▶ Проверить")).clicked() {
                 test = true;
+            }
+            if ui.button(tr("Открыть папку модели")).clicked() {
+                let _ = std::process::Command::new("explorer").arg(&dir).spawn();
             }
         });
         ui.add_space(8.0);
@@ -840,13 +897,10 @@ fn sound_dialog(app: &mut App, ctx: &Context, i: usize) {
             }
         });
     });
+    ctx.data_mut(|d| d.insert_temp(slot_id, slot));
     let id = h.id.clone();
-    if let Some(slot) = app.hotkeys_mut().and_then(|l| l.get_mut(i)) {
-        *slot = h;
-    }
-    if open_dir {
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+    if let Some(sl) = app.hotkeys_mut().and_then(|l| l.get_mut(i)) {
+        *sl = h;
     }
     if test {
         hotkeys::trigger(app, &id, Source::Test);
@@ -854,6 +908,140 @@ fn sound_dialog(app: &mut App, ctx: &Context, i: usize) {
     if ok || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         app.ui.modal = None;
         app.save();
+    }
+}
+
+/// General tab: sound output (VTS "Sound effects" card).
+pub fn sound_card(app: &mut App, ui: &mut egui::Ui) {
+    section(ui, "Звуковые эффекты", |ui| {
+        let s = &mut app.settings.sound;
+        toggle(ui, &mut s.play_local, tr("Воспроизводить в приложении"));
+        toggle(ui, &mut s.vban, tr("Отправлять в OBS (VBAN)"));
+        ui.horizontal(|ui| {
+            ui.label(tr("Громкость"));
+            ui.add(egui::Slider::new(&mut s.volume, 0.0..=100.0).suffix("%"));
+        });
+        if s.vban {
+            ui.horizontal(|ui| {
+                ui.label("IP");
+                ui.add(egui::TextEdit::singleline(&mut s.vban_ip).desired_width(120.0));
+                ui.label(tr("Порт"));
+                let mut p = s.vban_port as f32;
+                if ui.add(egui::DragValue::new(&mut p).range(1.0..=65535.0)).changed() {
+                    s.vban_port = p as u16;
+                }
+                ui.label(tr("Имя потока"));
+                ui.add(egui::TextEdit::singleline(&mut s.vban_stream).desired_width(100.0));
+            });
+            ui.label(RichText::new(tr("В OBS: плагин VBAN Audio → источник «VBAN Audio Source», порт 6980.")).size(13.0).weak());
+        }
+        let peak = app.audio.as_ref().map(|a| a.peak()).unwrap_or(0.0);
+        ui.add(egui::ProgressBar::new(peak).desired_width(300.0).text(format!("{:.0} dB", 20.0 * peak.max(1e-4).log10())));
+        if let Some(e) = app.audio.as_ref().and_then(|a| a.error()) {
+            ui.colored_label(Color32::from_rgb(220, 80, 80), e);
+        }
+    });
+}
+
+/// Model tab: model volume, spatial audio and parameter sound triggers.
+pub fn model_sound_card(app: &mut App, ui: &mut egui::Ui) {
+    let Some(key) = app.model_key() else { return };
+    let params: Vec<String> = app.avatar.as_ref().map(|a| a.model.param_ids.clone()).unwrap_or_default();
+    let dir = app.avatar.as_ref().map(|a| a.dir.clone()).unwrap_or_default();
+    let mut test = None;
+    section(ui, "Звук модели", |ui| {
+        let ms = app.settings.model_sound.entry(key.clone()).or_default();
+        ui.horizontal(|ui| {
+            ui.label(tr("Громкость модели"));
+            ui.add(egui::Slider::new(&mut ms.volume, 0.0..=100.0).suffix("%"));
+            ui.checkbox(&mut ms.muted, tr("Без звука"));
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut ms.volume_by_size, tr("Громкость по размеру"));
+            ui.add_enabled(ms.volume_by_size, egui::DragValue::new(&mut ms.size_range[0]).speed(1.0).prefix("min "));
+            ui.add_enabled(ms.volume_by_size, egui::DragValue::new(&mut ms.size_range[1]).speed(1.0).prefix("max "));
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut ms.pan_by_x, tr("Панорама по X"));
+            ui.add_enabled(ms.pan_by_x, egui::DragValue::new(&mut ms.x_range[0]).speed(0.01).prefix("min "));
+            ui.add_enabled(ms.pan_by_x, egui::DragValue::new(&mut ms.x_range[1]).speed(0.01).prefix("max "));
+        });
+        ui.separator();
+        ui.label(RichText::new(tr("Звуковые триггеры параметров")).strong());
+        let mut del = None;
+        for (k, t) in ms.triggers.iter_mut().enumerate() {
+            egui::CollapsingHeader::new(if t.name.is_empty() { format!("{} {}", tr("Триггер"), k + 1) } else { t.name.clone() }).id_salt(("trg", k)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut t.active, tr("Активен"));
+                    ui.add(egui::TextEdit::singleline(&mut t.name).hint_text(tr("Название")).desired_width(160.0));
+                    if ui.small_button("▶").clicked() {
+                        test = Some(k);
+                    }
+                    if ui.small_button("🗑").clicked() {
+                        del = Some(k);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(tr("Параметр"));
+                    egui::ComboBox::from_id_salt(("trg-p", k)).selected_text(t.parameter.clone()).height(300.0).show_ui(ui, |ui| {
+                        for p in &params {
+                            ui.selectable_value(&mut t.parameter, p.clone(), p);
+                        }
+                    });
+                    use crate::sfx::TriggerKind::*;
+                    for (kind, label) in [(Value, "Значение"), (Speed, "Скорость"), (DirectionChange, "Смена направления"), (PassRight, "Проход →"), (PassLeft, "Проход ←")] {
+                        ui.selectable_value(&mut t.kind, kind, tr(label));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(tr("Диапазон"));
+                    ui.add(egui::DragValue::new(&mut t.range[0]).speed(0.01));
+                    ui.add(egui::DragValue::new(&mut t.range[1]).speed(0.01));
+                    ui.label(tr("Перезарядка (сек.)"));
+                    ui.add(egui::DragValue::new(&mut t.cooldown[0]).speed(0.01).range(0.0..=60.0));
+                    ui.add(egui::DragValue::new(&mut t.cooldown[1]).speed(0.01).range(0.0..=60.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.label(tr("Условие: параметр"));
+                    egui::ComboBox::from_id_salt(("trg-c", k)).selected_text(if t.condition_parameter.is_empty() { tr("(нет)").to_string() } else { t.condition_parameter.clone() }).height(300.0).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut t.condition_parameter, String::new(), tr("(нет)"));
+                        for p in &params {
+                            ui.selectable_value(&mut t.condition_parameter, p.clone(), p);
+                        }
+                    });
+                    ui.add(egui::DragValue::new(&mut t.condition_range[0]).speed(0.01));
+                    ui.add(egui::DragValue::new(&mut t.condition_range[1]).speed(0.01));
+                });
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut t.speed_to_volume, tr("Скорость → громкость"));
+                    ui.add(egui::DragValue::new(&mut t.speed_to_volume_range[0]).speed(0.01));
+                    ui.add(egui::DragValue::new(&mut t.speed_to_volume_range[1]).speed(0.01));
+                    ui.checkbox(&mut t.speed_to_pitch, tr("Скорость → тон"));
+                    ui.add(egui::DragValue::new(&mut t.speed_to_pitch_range[0]).speed(0.01));
+                    ui.add(egui::DragValue::new(&mut t.speed_to_pitch_range[1]).speed(0.01));
+                });
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut t.item_load_sound, tr("Звук загрузки предмета"));
+                    ui.checkbox(&mut t.item_delete_sound, tr("Звук удаления предмета"));
+                });
+                sound_params_ui(ui, &format!("trg{k}"), &mut t.sound, &dir);
+            });
+        }
+        if let Some(k) = del {
+            ms.triggers.remove(k);
+        }
+        if ui.button(tr("+ Добавить триггер")).clicked() {
+            ms.triggers.push(crate::sfx::SoundTrigger { parameter: params.first().cloned().unwrap_or_default(), ..Default::default() });
+        }
+    });
+    if let Some(k) = test {
+        let t = app.settings.model_sound.get(&key).and_then(|m| m.triggers.get(k).cloned());
+        if let Some(t) = t {
+            let data = app.paths.data.join("Sounds");
+            if let Some(req) = crate::audio::request(&t.sound, |n| crate::hotkeys::resolve_sound(&[dir.clone()], &data, n), &key, 1.0, 1.0, 0.0) {
+                app.play_sound(req);
+            }
+        }
     }
 }
 

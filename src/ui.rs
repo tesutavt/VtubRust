@@ -1138,7 +1138,7 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
         });
     });
     crate::ui_hotkeys::controller_card(app, ui);
-    stub_card(ui, tr("Звуковые эффекты"), &["Воспроизводить в приложении", "Отправлять в OBS"], "");
+    crate::ui_hotkeys::sound_card(app, ui);
     crate::ui_hotkeys::mic_card(app, ui);
     crate::ui_hotkeys::twitch_card(app, ui);
     stub_card(ui, "Discord", &["Войти и активировать"], "Отключено");
@@ -2750,6 +2750,7 @@ fn model_tab(app: &mut App, ui: &mut egui::Ui) {
         app.ui.modal = Some(m);
         app.ui.modal_sel = None;
     }
+    crate::ui_hotkeys::model_sound_card(app, ui);
     crate::ui_model_extra::artmesh_card(app, ui);
     crate::ui_model_extra::copy_card(app, ui);
 }
