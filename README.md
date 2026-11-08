@@ -92,13 +92,22 @@ The tracker runs as a separate process (OpenSeeFace / Mediapipe); its load is sh
 - ✅ Calibration, blink/eye/mouth/smile/brow sensitivity, blink sync
 - ✅ Mouse input, **Tobii** support (via Tobii Stream Engine)
 - ✅ **Hotkeys** in the VTube Studio format, per model, imported from `.vtube.json`:
-  up to 3-key combos, global hotkeys (work when the window isn't focused), hand gestures,
-  fade / auto-off / off-on-key-release, on-screen buttons 1–8, sounds (WAV/MP3)
+  2-key combos (keyboard, mouse and controller buttons), global hotkeys, one- and two-hand gestures,
+  fade / auto-off / off-on-key-release, on-screen buttons 1–8, up to 10 sound slots per hotkey,
+  ArtMesh color presets, screen overlay presets, Live2D item actions
+- ✅ **Microphone lipsync**: VoiceA/I/U/E/O, VoiceVolume, VoiceFrequency, VoiceSilence with voice calibration
+- ✅ **Controller input**: XInput, DualShock 4 / DualSense (touchpad, gyro), all VTS controller parameters, controller hotkeys
+- ✅ **Sound effects**: hotkey sounds, parameter sound triggers, spatial audio, model volume, output to speakers and OBS (VBAN)
 - ✅ **Twitch**: chat, hotkey triggers, Emote Dropper, flying chat, BTTV / 7TV / FFZ emotes
 - ✅ **Plugin API** compatible with the VTube Studio Public API 1.0
-- ✅ Items (PNG/GIF/Live2D): drop an item onto the model and it sticks to that spot; item scenes on hotkeys
+- ✅ Items (PNG/GIF/PNG-folder animations/Live2D): drop an item onto the model and it sticks to that spot,
+  item order, items between model layers, Live2D item split, smoothing, censor, drag & drop of files,
+  item scenes with groups and fades; Live2D items follow head tracking
+- ✅ Per-ArtMesh model settings (VTS `ArtMeshDetails`): pin exclusion, "eat" items, lighting, recoloring, groups
+- ✅ Live2D Cubism Editor connection (parameter sync, exported model import)
 - ✅ Backgrounds, lighting overlay (a monitor's or window's color tints the model)
-- ✅ 18 visual effects (snow, glow, rim light, ASCII, glitches, cinema and more) + presets
+- ✅ The **29 VTube Studio visual effects** with their 257 config IDs (bloom, backlight, particles,
+  background shift, VHS, datamosh, lens/wave distortion, model glitch …) + presets with fades
 - ✅ Output: **Spout2** (with transparency), **NDI**, **Windows 11 virtual camera** (rigrsCam)
 - ✅ Live2D animation recording to `.motion3.json`, screenshots
 - ✅ Performance overlay: FPS, CPU and RAM of the app and the tracker
@@ -215,10 +224,15 @@ VtubRust/
 - [x] Twitch integration
 - [x] English / Russian interface
 - [x] Twitch effects in the Spout2 / NDI / virtual camera output
-- [ ] Microphone lipsync
-- [ ] Phone tracking (Wi-Fi / USB)
+- [x] Microphone lipsync
+- [x] Controller input
+- [x] Sound effects, VBAN
+- [x] VTS effect set, item system, ArtMesh settings, Cubism Editor API
+- [ ] Phone tracking (VTube Studio iPhone/Android app protocol)
+- [ ] Own multiplayer (collabs between rigrs users)
+- [ ] Web items
+- [ ] Auto-updater from GitHub releases
 - [ ] Discord, mocopi
-- [ ] Controller input
 
 ## 💜 Author
 
