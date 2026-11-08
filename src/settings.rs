@@ -131,12 +131,23 @@ pub struct SavedItem {
     pub front: bool,
     pub locked: bool,
     pub pin: Option<Pin>,
+    #[serde(default)]
+    pub cfg: Option<crate::scene::ItemCfg>,
+    #[serde(default)]
+    pub scene: Option<String>,
+    /// Model (model3 path) the item is pinned to; pinned items of other models are skipped
+    /// when an item scene is loaded (VTS).
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ItemScene {
     pub name: String,
     pub items: Vec<SavedItem>,
+    /// VTS "Item Scene Group": loading a scene unloads items of other scenes in the same group.
+    #[serde(default)]
+    pub group: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -228,6 +239,13 @@ pub struct Settings {
     pub send_to_pc: bool,
     pub screen_buttons_opacity: f32,
     pub light_last_mode: u8,
+    /// Animated item FPS remembered per item file (VTS remembers it too).
+    pub item_fps: HashMap<String, f32>,
+    /// Per-model ArtMesh settings (VTS ArtMeshDetails), keyed by model3 path.
+    pub model_artmesh: HashMap<String, crate::artmesh::ArtMeshDetails>,
+    /// Global item options: drag & drop of files into the window, allowed types.
+    pub item_drag_drop: bool,
+    pub item_show_pin_notifications: bool,
 
     pub api_on: bool,
     pub api_port: u16,
@@ -319,6 +337,10 @@ impl Default for Settings {
             send_to_pc: true,
             screen_buttons_opacity: 75.0,
             light_last_mode: 1,
+            item_fps: HashMap::new(),
+            model_artmesh: HashMap::new(),
+            item_drag_drop: true,
+            item_show_pin_notifications: false,
             api_on: false,
             api_port: 8001,
             api_lan: false,

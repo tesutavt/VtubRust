@@ -304,6 +304,7 @@ pub fn run(app: &mut App, ctx: &Context) {
         }
     }
     crate::ui_hotkeys::screen_buttons(app, ctx);
+    crate::ui_hotkeys::reset_notice(app, ctx);
     let dt = app.ui_dt;
     crate::twitch_fx::run(app, ctx, dt);
     crate::ui_hotkeys::api_prompt(app, ctx);
@@ -341,6 +342,21 @@ fn scene_input(app: &mut App, ctx: &Context) {
     let over_ui = ctx.is_pointer_over_area();
     let ctrl = ctx.input(|i| i.modifiers.ctrl);
 
+    if let Some(Drag::Item { id, .. }) = app.ui.drag {
+        let screen = ctx.screen_rect();
+        let trash = egui::Rect::from_center_size(screen.right_bottom() - Vec2::new(70.0, 70.0), Vec2::splat(84.0));
+        let over = pos.map(|p| trash.contains(p)).unwrap_or(false);
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("trash")));
+        painter.circle_filled(trash.center(), 40.0, if over { Color32::from_rgb(236, 80, 96) } else { Color32::from_black_alpha(150) });
+        painter.text(trash.center(), Align2::CENTER_CENTER, "🗑", FontId::proportional(38.0), Color32::WHITE);
+        if over && (released || !down) {
+            app.items.retain(|i| i.id != id);
+            app.ui.selected = None;
+            app.ui.drag = None;
+            app.save();
+            return;
+        }
+    }
     if let Some(d) = app.ui.drag {
         if down {
             let dw = [delta.x * ppp, -delta.y * ppp];
@@ -375,15 +391,43 @@ fn scene_input(app: &mut App, ctx: &Context) {
                     // VTS: dropping an item off-screen deletes it.
                     app.items.retain(|i| i.id != id);
                     app.ui.selected = None;
-                } else if let Some(it) = app.items.iter_mut().find(|i| i.id == id) {
-                    // VTS: an item dropped onto the model sticks to the uppermost ArtMesh under its centre.
+                } else if let Some(k) = app.items.iter().position(|i| i.id == id) {
+                    let details = app.model_key().and_then(|key| app.settings.model_artmesh.get(&key).cloned());
+                    let notify_all = app.settings.item_show_pin_notifications;
+                    let mut eaten = false;
+                    let mut note = None;
                     if let Some(a) = &app.avatar {
-                        it.pin = None;
-                        it.pin_to(a);
+                        let det = details.as_ref().or(a.vts_artmesh.as_ref());
+                        let it = &mut app.items[k];
+                        // VTS: ArtMeshes that "delete items dropped on them" (e.g. a mouth that eats items).
+                        if let Some(pk) = a.pick(it.xf.pos) {
+                            if det.map(|d| d.deletes(&a.model.drawables[pk.drawable].id)).unwrap_or(false) {
+                                eaten = true;
+                            }
+                        }
+                        if !eaten {
+                            // VTS: an item dropped onto the model sticks to the uppermost allowed ArtMesh under its centre.
+                            let was = it.pin.is_some();
+                            it.pin = None;
+                            let mesh = it.pin_to_filtered(a, det);
+                            if it.cfg.pin_notify || notify_all {
+                                note = match (&mesh, was) {
+                                    (Some(m), _) => Some(format!("{} {m}", tr("Закреплено к слою"))),
+                                    (None, true) => Some(tr("Предмет откреплён").to_string()),
+                                    _ => None,
+                                };
+                            }
+                        }
                     }
-                    // VTS: double-click an item to lock / unlock it.
-                    if dbl {
-                        it.locked = !it.locked;
+                    if eaten {
+                        app.items.remove(k);
+                        app.ui.selected = None;
+                    } else if dbl {
+                        // VTS: double-click an item to lock / unlock it.
+                        app.items[k].locked = !app.items[k].locked;
+                    }
+                    if let Some(n) = note {
+                        app.toast(n);
                     }
                 }
             }
@@ -404,12 +448,12 @@ fn scene_input(app: &mut App, ctx: &Context) {
         Avatar,
         Nothing,
     }
-    let front = app.items.iter().enumerate().rev().filter(|(_, i)| i.front).find(|(_, i)| i.hit(w)).map(|(k, _)| k);
+    let front = app.items.iter().enumerate().rev().filter(|(_, i)| i.front()).find(|(_, i)| i.hit(w)).map(|(k, _)| k);
     let hit = if let Some(k) = front {
         Hit::Item(k)
     } else if app.avatar.as_ref().map(|a| a.pick(w).is_some()).unwrap_or(false) {
         Hit::Avatar
-    } else if let Some(k) = app.items.iter().enumerate().rev().filter(|(_, i)| !i.front).find(|(_, i)| i.hit(w)).map(|(k, _)| k) {
+    } else if let Some(k) = app.items.iter().enumerate().rev().filter(|(_, i)| !i.front()).find(|(_, i)| i.hit(w)).map(|(k, _)| k) {
         Hit::Item(k)
     } else {
         Hit::Nothing
@@ -741,72 +785,7 @@ fn scenes_dialog(app: &mut App, ctx: &Context) {
 }
 
 fn item_panel(app: &mut App, ctx: &Context) {
-    let Some(id) = app.ui.selected else { return };
-    let Some(idx) = app.items.iter().position(|i| i.id == id) else {
-        app.ui.selected = None;
-        return;
-    };
-    let mut open = true;
-    let mut remove = false;
-    let mut move_by: i32 = 0;
-    egui::Window::new(tr("Предмет"))
-        .id(egui::Id::new("item-panel"))
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::LEFT_BOTTOM, [96.0, -150.0])
-        .show(ctx, |ui| {
-            let has_avatar = app.avatar.is_some();
-            let it = &mut app.items[idx];
-            ui.label(RichText::new(&it.name).strong());
-            ui.checkbox(&mut it.front, tr("Перед моделью"));
-            let _ = has_avatar;
-            ui.label(RichText::new(if it.pin.is_some() { "📌 Закреплён на модели (перетащите, чтобы перевесить)" } else { "Не закреплён — положите предмет на модель" }).weak());
-            ui.checkbox(&mut it.locked, tr("Заблокировать"));
-            ui.checkbox(&mut it.xf.flip, tr("Отразить"));
-            ui.horizontal(|ui| {
-                ui.label(tr("Размер"));
-                let mut s = it.xf.scale;
-                if ui.add(egui::DragValue::new(&mut s).speed(0.01).range(0.01..=50.0)).changed() {
-                    if let Some(p) = &mut it.pin {
-                        p.scale_ratio *= s / it.xf.scale;
-                    }
-                    it.xf.scale = s;
-                }
-                ui.label(tr("Поворот"));
-                let mut r = it.xf.rot;
-                if ui.add(egui::DragValue::new(&mut r).speed(1.0).suffix("°")).changed() {
-                    if let Some(p) = &mut it.pin {
-                        p.rot0 += r - it.xf.rot;
-                    }
-                    it.xf.rot = r;
-                }
-            });
-            ui.horizontal(|ui| {
-                if ui.button(tr("⬆ Выше")).clicked() {
-                    move_by = 1;
-                }
-                if ui.button(tr("⬇ Ниже")).clicked() {
-                    move_by = -1;
-                }
-                if ui.button(tr("🗑 Удалить")).clicked() {
-                    remove = true;
-                }
-            });
-            if let Body::Live2D(l) = &it.body {
-                ui.label(RichText::new(format!("Live2D: {} мешей", l.model.drawables.len())).small().weak());
-            }
-        });
-    if move_by != 0 {
-        let j = (idx as i32 + move_by).clamp(0, app.items.len() as i32 - 1) as usize;
-        app.items.swap(idx, j);
-    }
-    if remove {
-        app.actions.push(Action::RemoveItem(id));
-    }
-    if !open || remove {
-        app.ui.selected = None;
-    }
+    crate::ui_items::item_config(app, ctx);
 }
 
 // ---------------------------------------------------------------------- settings
@@ -2726,6 +2705,8 @@ fn model_tab(app: &mut App, ui: &mut egui::Ui) {
         app.ui.modal = Some(m);
         app.ui.modal_sel = None;
     }
+    crate::ui_model_extra::artmesh_card(app, ui);
+    crate::ui_model_extra::copy_card(app, ui);
 }
 
 // ---------------------------------------------------------------------- overlays

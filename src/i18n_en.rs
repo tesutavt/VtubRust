@@ -592,6 +592,14 @@
 ("Функция Twitch", "Twitch feature"),
 ("Пресет эффектов", "Effect preset"),
 ("Файл", "File"),
+("Треугольник 🔺 (две руки)", "Triangle 🔺 (two hands)"),
+("«Это мне?» 👉👈 (две руки)", "\"Is it for me?\" 👉👈 (two hands)"),
+("Период ожидания активен:", "Cooldown active:"),
+("с", "s"),
+("Отменить период ожидания и сброс", "Cancel cooldown and reset"),
+("Возврат к модели", "Returning to model"),
+("через", "in"),
+("Отменить", "Cancel"),
 ("Блокировка модели", "Model lock"),
 ("Закрыть
 программу", "Quit

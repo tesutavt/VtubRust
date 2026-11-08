@@ -62,7 +62,10 @@ fn mask_value(set_f: f32, inverted: f32, ndc: vec2<f32>) -> f32 {
 @fragment
 fn fs_draw(i: VOut) -> @location(0) vec4<f32> {
     let d = draws[i.inst];
-    let c = textureSample(tex, samp, i.uv);
+    // opacity.y > 0: mosaic block size in UV units (VTS "Censor" item option).
+    let b = max(d.opacity.y, 1e-6);
+    let uv = select(i.uv, (floor(i.uv / b) + 0.5) * b, d.opacity.y > 0.0);
+    let c = textureSample(tex, samp, uv);
     var rgb = c.rgb * d.multiply.rgb;
     rgb = rgb + d.screen.rgb * c.a - rgb * d.screen.rgb;
     let m = mask_value(d.mask.x, d.mask.y, i.ndc);

@@ -138,6 +138,17 @@ pub struct Live2D {
     pub art_tint: Vec<[f32; 4]>,
     pub load_time: std::time::Instant,
     pub load_ms: u64,
+    /// Static per-ArtMesh screen color (VTS recoloring) and lighting-overlay multiplier.
+    pub art_screen: Vec<[f32; 4]>,
+    pub light_mult: Vec<f32>,
+    /// Whole-model opacity (item fade in/out) and mosaic block size (item censor, 0 = off).
+    pub alpha: f32,
+    pub mosaic: f32,
+    /// ArtMeshDetails from .vtube.json and userdata3 `vts_ignore_raycast` ids.
+    pub vts_artmesh: Option<crate::artmesh::ArtMeshDetails>,
+    pub ignore_raycast: Vec<String>,
+    /// ArtMesh highlighted in the settings list.
+    pub highlight: Option<usize>,
     /// Physics strength forced by a plugin (SetCurrentModelPhysics).
     pub api_strength: Option<f32>,
     pub texture_count: usize,
@@ -372,6 +383,13 @@ impl Live2D {
             art_tint: vec![[1.0; 4]; n],
             load_time: std::time::Instant::now(),
             load_ms: 0,
+            art_screen: vec![[0.0; 4]; n],
+            light_mult: vec![1.0; n],
+            alpha: 1.0,
+            mosaic: 0.0,
+            vts_artmesh: vt.as_ref().and_then(|v| v.art_mesh_details.clone()),
+            highlight: None,
+            ignore_raycast: crate::artmesh::userdata_ignored(model3, m3.file_references.user_data.as_deref()),
             api_strength: None,
             texture_count: tex_count,
             texture_size: tex_size,
@@ -666,10 +684,15 @@ impl Live2D {
         for i in 0..m.drawables.len() {
             let (a, b) = (mul[i], scr[i]);
             let at = self.art_tint[i];
+            let sc = self.art_screen[i];
+            // Lighting overlay weighted per ArtMesh (VTS "ArtMesh scene lighting multipliers").
+            let lm = self.light_mult[i];
+            let lt = [1.0 + (self.tint[0] - 1.0) * lm, 1.0 + (self.tint[1] - 1.0) * lm, 1.0 + (self.tint[2] - 1.0) * lm];
+            let scr_c = |x: f32, y: f32| x + y - x * y;
             self.draw_scratch[i] = DrawData {
-                multiply: [a.x * self.tint[0] * at[0], a.y * self.tint[1] * at[1], a.z * self.tint[2] * at[2], 1.0],
-                screen: [b.x, b.y, b.z, 0.0],
-                opacity: [op[i] * at[3], 0.0, 0.0, 0.0],
+                multiply: [a.x * lt[0] * at[0], a.y * lt[1] * at[1], a.z * lt[2] * at[2], 1.0],
+                screen: if self.highlight == Some(i) { [1.0, 0.25, 0.65, 0.0] } else { [scr_c(b.x, sc[0]), scr_c(b.y, sc[1]), scr_c(b.z, sc[2]), 0.0] },
+                opacity: [op[i] * at[3] * self.alpha, self.mosaic, 0.0, 0.0],
                 mask: [self.mask_set[i] as f32, if m.drawables[i].constant_flags & IS_INVERTED_MASK != 0 { 1.0 } else { 0.0 }, 0.0, 0.0],
             };
         }
@@ -682,11 +705,58 @@ impl Live2D {
         self.batch.set_xf(&gpu.queue, &affine);
     }
 
+    /// Number of drawables in render order.
+    pub fn order_len(&self) -> usize {
+        self.order.len()
+    }
+
+    /// Position of a drawable (by ArtMesh id) in the current render order.
+    pub fn order_pos(&self, id: &str) -> Option<usize> {
+        let d = self.drawable_index(id)?;
+        self.order.iter().position(|&i| i == d)
+    }
+
+    /// Drawable index at a render-order position.
+    pub fn order_at(&self, pos: usize) -> Option<usize> {
+        self.order.get(pos).copied()
+    }
+
+    /// Position of a drawable index in the current render order.
+    pub fn order_pos_of(&self, d: usize) -> Option<usize> {
+        self.order.iter().position(|&i| i == d)
+    }
+
+    /// Recomputes per-ArtMesh static colors / lighting multipliers from ArtMeshDetails.
+    pub fn apply_artmesh(&mut self, d: &crate::artmesh::ArtMeshDetails) {
+        for (i, dr) in self.model.drawables.iter().enumerate() {
+            match d.colors(&dr.id) {
+                Some((m, s)) => {
+                    self.art_tint[i] = m;
+                    self.art_screen[i] = s;
+                }
+                None => {
+                    self.art_tint[i] = [1.0; 4];
+                    self.art_screen[i] = [0.0; 4];
+                }
+            }
+            self.light_mult[i] = d.light_mult(&dr.id);
+        }
+    }
+
     pub fn draw(&self, p: &mut Painter) {
+        self.draw_range(p, 0..self.order.len());
+    }
+
+    /// Draws the drawables at render-order positions `range` (between-layer item insertion).
+    pub fn draw_range(&self, p: &mut Painter, range: std::ops::Range<usize>) {
         let m = &self.model;
         let (flags, op) = (m.dynamic_flags(), m.opacities());
+        let range = range.start.min(self.order.len())..range.end.min(self.order.len());
+        if range.is_empty() {
+            return;
+        }
         p.bind(&self.batch);
-        for &i in &self.order {
+        for &i in &self.order[range] {
             let d = &m.drawables[i];
             if d.index_count == 0 || flags[i] & IS_VISIBLE == 0 || op[i] < 0.001 {
                 continue;
@@ -740,9 +810,14 @@ impl Live2D {
 
     /// Topmost visible triangle under a world-space point.
     pub fn pick(&self, world: [f32; 2]) -> Option<Pick> {
+        self.pick_filtered(world, |_| true)
+    }
+
+    /// Topmost visible drawable under `world` that passes `allow` (by drawable index).
+    pub fn pick_filtered(&self, world: [f32; 2], allow: impl Fn(usize) -> bool) -> Option<Pick> {
         let p = self.eff_xf().to_local(world);
         for &i in self.order.iter().rev() {
-            if !self.visible(i) {
+            if !self.visible(i) || !allow(i) {
                 continue;
             }
             let pos = self.model.positions(i);

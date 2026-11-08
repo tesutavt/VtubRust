@@ -27,6 +27,7 @@ pub struct Model3Files {
     pub motions: HashMap<String, Vec<Model3Motion>>,
     #[serde(default)]
     pub expressions: Vec<Model3Expression>,
+    pub user_data: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -232,6 +233,7 @@ pub struct VtubeJson {
     #[serde(rename = "ModelID")]
     pub model_id: String,
     pub hotkeys: Vec<crate::hotkeys::Hotkey>,
+    pub art_mesh_details: Option<crate::artmesh::ArtMeshDetails>,
     pub file_references: VtubeFiles,
     pub parameter_settings: Vec<VtubeParam>,
     pub physics_settings: Option<VtubePhysics>,

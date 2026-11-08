@@ -689,11 +689,7 @@ fn handle_message(app: &mut App, srv: &mut ApiServer, sid: u64, text: &str) -> O
             let id = data["itemInstanceID"].as_str().unwrap_or("");
             match find_item(app, id) {
                 None => err(1250, "Item instance not found."),
-                Some(k) => {
-                    app.items[k].front = data["frontOn"].as_bool().unwrap_or(true);
-                    let a = app.avatar.as_ref();
-                    Ok(json!({ "itemInstanceID": id, "modelLoaded": a.is_some(), "modelID": a.map(|a| a.model_id.clone()).unwrap_or_default(), "modelName": a.map(|a| a.name.clone()).unwrap_or_default(), "loadedModelHadRequestedFrontLayer": false, "loadedModelHadRequestedBackLayer": false }))
-                }
+                Some(k) => item_sort(app, k, id, &data),
             }
         }
         "PostProcessingListRequest" => Ok(post_processing_list(app, &data)),
@@ -747,6 +743,12 @@ fn handle_message(app: &mut App, srv: &mut ApiServer, sid: u64, text: &str) -> O
 }
 
 // ------------------------------------------------------------------ helpers
+
+/// ModelConfigChangedEvent payload.
+pub fn model_config_event(app: &App) -> Value {
+    let a = app.avatar.as_ref();
+    json!({ "modelID": a.map(|a| a.model_id.clone()).unwrap_or_default(), "modelName": a.map(|a| a.name.clone()).unwrap_or_default(), "hotkeyConfigChanged": false })
+}
 
 pub fn model_id_of(model3: &std::path::Path, vtube: Option<&std::path::Path>) -> String {
     if let Some(v) = vtube.and_then(|p| crate::formats::read_json::<crate::formats::VtubeJson>(p).ok()) {
@@ -1132,11 +1134,11 @@ fn item_list(app: &App, d: &Value) -> Value {
             .enumerate()
             .filter(|(_, i)| only_id.is_empty() || instance_id(i.id) == only_id)
             .filter(|(_, i)| only_file.is_empty() || item_file_name(&i.source).contains(only_file))
-            .map(|(k, i)| {
+            .map(|(_, i)| {
                 json!({
-                    "fileName": item_file_name(&i.source), "instanceID": instance_id(i.id), "order": if i.front { k as i64 + 1 } else { -(k as i64) - 1 },
-                    "type": item_type(&i.source), "censored": false, "flipped": i.xf.flip, "locked": i.locked, "smoothing": 0.0,
-                    "framerate": 0.0, "frameCount": 1, "currentFrame": 0, "pinnedToModel": i.pin.is_some(),
+                    "fileName": item_file_name(&i.source), "instanceID": instance_id(i.id), "order": i.cfg.order,
+                    "type": item_type(&i.source), "censored": i.cfg.censor, "flipped": i.xf.flip, "locked": i.locked, "smoothing": i.cfg.smoothing,
+                    "framerate": frames_of(i).0, "frameCount": frames_of(i).1, "currentFrame": frames_of(i).2, "pinnedToModel": i.pin.is_some(),
                     "pinnedModelID": if i.pin.is_some() { app.avatar.as_ref().map(|a| a.model_id.clone()).unwrap_or_default() } else { String::new() },
                     "pinnedArtMeshID": i.pin.as_ref().and_then(|p| app.avatar.as_ref().and_then(|a| a.model.drawables.get(p.drawable)).map(|d| d.id.clone())).unwrap_or_default(),
                     "groupName": "", "sceneName": "", "fromWorkshop": false,
@@ -1221,11 +1223,106 @@ fn item_load(app: &mut App, sid: u64, plugin: &str, dev: &str, d: &Value) -> Res
     }
     it.xf.flip = d["flipped"].as_bool().unwrap_or(false);
     it.locked = d["locked"].as_bool().unwrap_or(false);
-    it.front = d["order"].as_i64().map(|o| o >= 0).unwrap_or(true);
+    if let Some(o) = d["order"].as_i64() {
+        it.cfg.order = if o == 0 { 1 } else { o as i32 };
+    }
+    it.cfg.smoothing = d["smoothing"].as_f64().unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+    it.cfg.censor = d["censored"].as_bool().unwrap_or(false);
+    if let Some(ft) = d["fadeTime"].as_f64().filter(|t| *t > 0.0) {
+        it.alpha = 0.0;
+        it.fade_speed = 1.0 / (ft.min(2.0) as f32);
+    }
     app.api_item_owner.insert(id, (sid, d["unloadWhenPluginDisconnects"].as_bool().unwrap_or(false)));
     let pos = app.items[k].xf.pos;
     app.api_events.push(("ItemEvent".into(), json!({ "itemEventType": "Added", "itemInstanceID": instance_id(id), "itemFileName": item_file_name(&path), "itemPosition": { "x": pos[0] / (vw / 2.0), "y": pos[1] / (vh / 2.0) } })));
     Ok(json!({ "instanceID": instance_id(id), "fileName": item_file_name(&path) }))
+}
+
+/// (fps, frame count, current frame) of an animated item.
+fn frames_of(i: &crate::scene::Item) -> (f32, usize, usize) {
+    match &i.body {
+        crate::scene::Body::Sprite(s) if s.frame_count() > 1 => (if i.cfg.fps > 0.0 { i.cfg.fps } else { 12.0 }, s.frame_count(), s.current_frame()),
+        _ => (0.0, 1, 0),
+    }
+}
+
+fn item_sort(app: &mut App, k: usize, iid: &str, d: &Value) -> Res {
+    let mode = |key: &str| d[key].as_str().unwrap_or("Unchanged").to_string();
+    let (sp, fo, bo) = (mode("setSplitPoint"), mode("setFrontOrder"), mode("setBackOrder"));
+    for m in [&sp, &fo, &bo] {
+        if !["Unchanged", "UseArtMeshID", "UseSpecialID"].contains(&m.as_str()) {
+            return err(1251, "Invalid value set type.");
+        }
+    }
+    let special = |v: &str| match v {
+        "FullyInFront" => Some(crate::scene::LAYER_FRONT.to_string()),
+        "FullyInBack" => Some(crate::scene::LAYER_BACK.to_string()),
+        _ => None,
+    };
+    let s = |key: &str| d[key].as_str().unwrap_or("").to_string();
+    let front_on = d["frontOn"].as_bool().unwrap_or(false);
+    let back_on = d["backOn"].as_bool().unwrap_or(false);
+    let is_l2d = matches!(app.items[k].body, crate::scene::Body::Live2D(_));
+    let av = app.avatar.as_ref();
+    let mut had_front = false;
+    let mut had_back = false;
+    // Validate before changing anything.
+    let front = match fo.as_str() {
+        "UseArtMeshID" => {
+            had_front = av.map(|a| a.drawable_index(&s("withinModelOrderFront")).is_some()).unwrap_or(false);
+            Some(s("withinModelOrderFront"))
+        }
+        "UseSpecialID" => match special(&s("withinModelOrderFront")) {
+            Some(v) => Some(v),
+            None => return err(1252, "Invalid front order."),
+        },
+        _ => None,
+    };
+    let back = if !is_l2d {
+        None
+    } else {
+        match bo.as_str() {
+            "UseArtMeshID" => {
+                had_back = av.map(|a| a.drawable_index(&s("withinModelOrderBack")).is_some()).unwrap_or(false);
+                Some(s("withinModelOrderBack"))
+            }
+            "UseSpecialID" => match s("withinModelOrderBack").as_str() {
+                "FullyInBack" => Some(crate::scene::LAYER_BACK.to_string()),
+                _ => return err(1253, "Invalid back order."),
+            },
+            _ => None,
+        }
+    };
+    if is_l2d && sp == "UseArtMeshID" {
+        let id = s("splitAt");
+        let ok = match &app.items[k].body {
+            crate::scene::Body::Live2D(l) => l.drawable_index(&id).is_some(),
+            _ => false,
+        };
+        if !ok {
+            return err(1254, "Invalid split point.");
+        }
+        app.items[k].cfg.split = id;
+    }
+    let it = &mut app.items[k];
+    if let Some(f) = front {
+        it.cfg.split_front = f;
+    }
+    if let Some(b) = back {
+        it.cfg.split_back = b;
+    }
+    it.cfg.layer = if front_on { it.cfg.split_front.clone() } else { String::new() };
+    if !back_on {
+        it.cfg.split_back.clear();
+    }
+    if !front_on {
+        it.cfg.split_front.clear();
+    }
+    let a = app.avatar.as_ref();
+    Ok(json!({
+        "itemInstanceID": iid, "modelLoaded": a.is_some(), "modelID": a.map(|a| a.model_id.clone()).unwrap_or_default(),
+        "modelName": a.map(|a| a.name.clone()).unwrap_or_default(), "loadedModelHadRequestedFrontLayer": had_front, "loadedModelHadRequestedBackLayer": had_back,
+    }))
 }
 
 fn item_unload(app: &mut App, sid: u64, d: &Value) -> Value {
@@ -1288,7 +1385,7 @@ fn item_move(app: &mut App, d: &Value) -> Value {
             to.flip = m["flip"].as_bool().unwrap_or(false);
         }
         if let Some(o) = m["order"].as_i64().filter(|o| *o > -1000) {
-            it.front = o >= 0;
+            it.cfg.order = if o == 0 { 1 } else { o as i32 };
         }
         let t = (m["timeInSeconds"].as_f64().unwrap_or(0.0) as f32).clamp(0.0, 30.0);
         it.pin = None;

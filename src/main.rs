@@ -5,12 +5,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
+mod artmesh;
 mod app;
 mod hotkeys;
 mod twitch;
 mod twitch_fx;
 mod i18n;
 mod ui_hotkeys;
+mod ui_items;
+mod ui_model_extra;
 mod cubism;
 mod formats;
 mod gpu;
@@ -87,6 +90,7 @@ impl ApplicationHandler for Runner {
             }
             WindowEvent::Resized(s) => app.resize(s.width, s.height),
             WindowEvent::Occluded(o) => app.occluded = o,
+            WindowEvent::DroppedFile(p) => app.on_dropped_file(p),
             WindowEvent::RedrawRequested => {
                 app.frame();
                 if app.quit {

@@ -341,7 +341,7 @@ pub const ACTIONS: &[(&str, &str, bool, bool)] = &[
     ("RemoveAllItems", "Удалить все элементы со сцены", true, false),
     ("ToggleItemScene", "Переключить сцену элементов", true, true),
     ("DownloadRandomWorkshopItem", "Случайный предмет Мастерской", true, false),
-    ("ExecuteItemAction", "Действие элемента Live2D", false, false),
+    ("ExecuteItemAction", "Действие элемента Live2D", true, true),
     ("ArtMeshColorPreset", "Пресет цветов сетки ArtMesh", true, false),
     ("ToggleTracker", "Вкл./выкл. трекер", true, false),
     ("ToggleTwitchFeature", "Вкл./выкл. функцию Twitch", true, true),
@@ -377,7 +377,7 @@ pub fn file_caption(id: &str) -> &'static str {
 pub const TWITCH_FEATURES: [(&str, &str); 3] = [("EmoteDropper", "Twitch Emote Dropper"), ("FlyingChat", "Пролетающий чат Twitch"), ("HotkeyTriggers", "Триггеры горячей клавиши Twitch")];
 
 /// Hand gestures recognised from the 21 hand landmarks.
-pub const GESTURES: [(&str, &str); 8] = [
+pub const GESTURES: [(&str, &str); 10] = [
     ("", "Нет"),
     ("OpenHand", "Открытая ладонь ✋"),
     ("Fist", "Кулак ✊"),
@@ -386,7 +386,29 @@ pub const GESTURES: [(&str, &str); 8] = [
     ("Pointing", "Указательный палец ☝"),
     ("Rock", "Коза 🤘"),
     ("Call", "«Позвони мне» 🤙"),
+    ("DualTriangle", "Треугольник 🔺 (две руки)"),
+    ("DualIsForMe", "«Это мне?» 👉👈 (две руки)"),
 ];
+
+/// Two-hand gestures (VTS "dual-hand gesture": triangle, "is-for-me").
+pub fn detect_dual(a: &crate::tracking::Hand, b: &crate::tracking::Hand) -> &'static str {
+    let d = |p: [f32; 3], q: [f32; 3]| ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt();
+    let palm = (d(a.pts[0], a.pts[9]) + d(b.pts[0], b.pts[9])) * 0.5;
+    if palm < 1e-4 {
+        return "";
+    }
+    let (fa, fb) = (fingers(a), fingers(b));
+    // Index tips touching and thumb tips touching, index above thumbs: a triangle.
+    if d(a.pts[8], b.pts[8]) < palm * 0.6 && d(a.pts[4], b.pts[4]) < palm * 0.6 && a.pts[8][1] < a.pts[4][1] && fa[1] && fb[1] {
+        return "DualTriangle";
+    }
+    // Both hands pointing with the index fingers, tips close together: "is it for me?".
+    let pointing = |f: [bool; 5]| f[1] && !f[2] && !f[3] && !f[4];
+    if pointing(fa) && pointing(fb) && d(a.pts[8], b.pts[8]) < palm * 1.3 {
+        return "DualIsForMe";
+    }
+    ""
+}
 
 pub fn gesture_label(id: &str) -> &'static str {
     GESTURES.iter().find(|g| g.0 == id).map(|g| crate::i18n::tr(g.1)).unwrap_or("")
@@ -470,6 +492,106 @@ fn vk_down(_vk: u16) -> bool {
 
 // ------------------------------------------------------------------ runtime
 
+/// What an auto-reset restores (VTS wiki "Twitch Hotkey Triggers → Auto-reset").
+#[derive(Clone, Debug)]
+pub enum Undo {
+    /// Turn the expression off again.
+    Expression(String),
+    /// Move the model back to where it was.
+    Move(crate::scene::live2d::Xform),
+    /// Unload the item scene.
+    Scene(String),
+    /// Restore the previous effect values.
+    Effects(Vec<crate::vfx::Cfg>, bool),
+    /// Turn the Twitch feature off again.
+    Feature(String),
+    /// Load the previous model again.
+    Model(std::path::PathBuf, String),
+}
+
+#[derive(Clone, Debug)]
+pub struct Reset {
+    pub hotkey: String,
+    pub due: Instant,
+    pub undo: Undo,
+    pub hide_dialog: bool,
+}
+
+/// Undo record for a hotkey action, captured before the action runs.
+fn capture_undo(app: &App, h: &Hotkey) -> Option<Undo> {
+    Some(match h.action.as_str() {
+        "ToggleExpression" => Undo::Expression(h.file.clone()),
+        "MoveModel" => Undo::Move(app.avatar.as_ref()?.xf),
+        "ToggleItemScene" => Undo::Scene(h.file.trim_end_matches(".json").to_string()),
+        "LoadEffectPreset" => Undo::Effects(app.settings.vfx.clone(), app.settings.vfx_on),
+        "ToggleTwitchFeature" => Undo::Feature(h.file.clone()),
+        "ChangeVTSModel" => {
+            let a = app.avatar.as_ref()?;
+            Undo::Model(a.model3.clone(), a.name.clone())
+        }
+        _ => return None,
+    })
+}
+
+/// Executes an auto-reset.
+pub fn run_reset(app: &mut App, r: &Reset) {
+    match &r.undo {
+        Undo::Expression(file) => {
+            if let Some(a) = app.avatar.as_mut() {
+                if let Some(e) = a.expressions.iter_mut().find(|e| e.file.ends_with(file.as_str())) {
+                    e.active = false;
+                }
+            }
+        }
+        Undo::Move(xf) => {
+            if let Some(a) = app.avatar.as_ref() {
+                app.api_model_move = Some((a.xf, *xf, 0.0, 0.5));
+            }
+        }
+        Undo::Scene(name) => app.unload_scene(name, 0.3),
+        Undo::Effects(cfg, on) => {
+            app.settings.vfx = cfg.clone();
+            app.settings.vfx_on = *on;
+        }
+        Undo::Feature(f) => {
+            let t = &mut app.settings.twitch;
+            match f.as_str() {
+                "EmoteDropper" => t.dropper.enabled = false,
+                "FlyingChat" => t.chat.enabled = false,
+                _ => t.triggers_on = false,
+            }
+        }
+        Undo::Model(path, _) => {
+            if let Some(m) = app.library.models.iter().find(|m| &m.model3 == path).cloned() {
+                app.hk.hotkey_model_load = true;
+                app.actions.push(Action::LoadModel(m));
+            }
+        }
+    }
+}
+
+/// Cancels cooldowns / resets of a hotkey (manual trigger or config change, as in VTS).
+pub fn cancel(app: &mut App, hotkey: &str) {
+    app.hk.cooldown.remove(hotkey);
+    app.hk.resets.retain(|r| r.hotkey != hotkey);
+}
+
+/// Called before a model is replaced: pending resets of the old model run immediately
+/// (except "load previous model" ones), and all cooldowns are cancelled.
+pub fn before_model_change(app: &mut App) {
+    let manual = !std::mem::take(&mut app.hk.hotkey_model_load);
+    let pending = std::mem::take(&mut app.hk.resets);
+    for r in &pending {
+        if !matches!(r.undo, Undo::Model(..)) {
+            run_reset(app, r);
+        }
+    }
+    if !manual {
+        app.hk.resets = pending.into_iter().filter(|r| matches!(r.undo, Undo::Model(..))).collect();
+    }
+    app.hk.cooldown.clear();
+}
+
 #[derive(Default)]
 pub struct Runtime {
     /// Keys held during the previous frame.
@@ -484,8 +606,12 @@ pub struct Runtime {
     gesture: HashMap<String, (Option<Instant>, bool)>,
     /// Twitch cooldowns: hotkey id → last trigger.
     pub cooldown: HashMap<String, Instant>,
-    /// Model reset after cooldown: (model key, hotkey id, due time).
-    resets: Vec<(String, Instant)>,
+    /// Pending auto-resets after a Twitch cooldown (VTS "Reset after cooldown").
+    pub resets: Vec<Reset>,
+    /// Set while a ChangeVTSModel hotkey / reset loads a model (manual loads cancel model resets).
+    pub hotkey_model_load: bool,
+    /// Loaded ArtMesh color preset: (hotkey id, entries).
+    pub color_preset: Option<(String, Vec<crate::artmesh::IdValue>)>,
     /// Followers seen this session (repeated follow filter).
     pub followers: HashSet<String>,
     /// Sounds currently playing (MCI aliases).
@@ -528,7 +654,7 @@ pub fn update(app: &mut App, typing: bool) {
             }
             if vk_down(vk) {
                 now_down.push(vk);
-                if !keys.iter().any(|k| k == name) && keys.len() < 3 {
+                if !keys.iter().any(|k| k == name) && keys.len() < 2 {
                     keys.push(name.to_string());
                     any = true;
                 }
@@ -581,6 +707,36 @@ pub fn update(app: &mut App, typing: bool) {
             }
         }
     }
+    // Live2D items with "Use normal hotkey triggers": their own keyboard hotkeys.
+    let mut item_fire: Vec<(u64, Hotkey)> = Vec::new();
+    if app.settings.hotkeys_enabled && !typing {
+        for it in &app.items {
+            let crate::scene::Body::Live2D(l) = &it.body else { continue };
+            if !it.cfg.normal_hotkeys {
+                continue;
+            }
+            for h in l.vts_hotkeys.iter().filter(|h| h.is_active) {
+                let keys: Vec<u16> = h.triggers.list().iter().filter_map(|k| vk_of(k)).collect();
+                if keys.is_empty() || keys.len() != h.triggers.list().len() || (!focused && !(h.is_global && app.settings.send_to_pc)) {
+                    continue;
+                }
+                let all = keys.iter().all(|&k| vk_down(k));
+                for &k in &keys {
+                    if vk_down(k) {
+                        held.insert(k);
+                    }
+                }
+                if all && !keys.iter().all(|k| app.hk.held.contains(k)) {
+                    item_fire.push((it.id, h.clone()));
+                }
+            }
+        }
+    }
+    for (iid, h) in item_fire {
+        if let Some(crate::scene::Body::Live2D(l)) = app.items.iter_mut().find(|i| i.id == iid).map(|i| &mut i.body) {
+            run_on_item(l, &h);
+        }
+    }
     app.hk.held = held;
     for (id, keys) in fire {
         trigger(app, &id, Source::Key(keys));
@@ -602,10 +758,10 @@ pub fn update(app: &mut App, typing: bool) {
     }
 
     // ---- reset after Twitch cooldown
-    let resets: Vec<String> = app.hk.resets.iter().filter(|r| r.1 <= now).map(|r| r.0.clone()).collect();
-    app.hk.resets.retain(|r| r.1 > now);
-    for id in resets {
-        deactivate(app, &id);
+    let due: Vec<Reset> = app.hk.resets.iter().filter(|r| r.due <= now).cloned().collect();
+    app.hk.resets.retain(|r| r.due > now);
+    for r in due {
+        run_reset(app, &r);
     }
 
     // ---- hand gestures
@@ -615,11 +771,19 @@ pub fn update(app: &mut App, typing: bool) {
         Some(h) => [h.hands[1].as_ref().map(detect_gesture).unwrap_or(""), h.hands[0].as_ref().map(detect_gesture).unwrap_or("")],
         None => ["", ""],
     };
+    let dual = match hands {
+        Some(hf) => match (&hf.hands[0], &hf.hands[1]) {
+            (Some(a), Some(b)) => detect_dual(a, b),
+            _ => "",
+        },
+        None => "",
+    };
     for h in list.iter().filter(|h| h.is_active) {
         let g = &h.hand_gesture_settings;
         if g.gesture_left.is_empty() && g.gesture_right.is_empty() {
             continue;
         }
+        let is_dual = g.gesture_left.starts_with("Dual") || g.gesture_right.starts_with("Dual");
         let side = |want: &str, have: &str| want.is_empty() || want == have;
         let both = g.gesture_combinator != "OR";
         let ok_l = side(&g.gesture_left, detected[0]);
@@ -629,6 +793,10 @@ pub fn update(app: &mut App, typing: bool) {
             let ml = side(&g.gesture_left, detected[1]);
             let mr = side(&g.gesture_right, detected[0]);
             ok = if both { ml && mr } else { (!g.gesture_left.is_empty() && g.gesture_left == detected[1]) || (!g.gesture_right.is_empty() && g.gesture_right == detected[0]) };
+        }
+        if is_dual {
+            let want = if g.gesture_left.starts_with("Dual") { &g.gesture_left } else { &g.gesture_right };
+            ok = !dual.is_empty() && dual == want.as_str();
         }
         let st = app.hk.gesture.entry(h.id.clone()).or_insert((None, false));
         if ok {
@@ -665,6 +833,14 @@ pub fn trigger(app: &mut App, id_or_name: &str, src: Source) -> bool {
     };
     let by_api = matches!(src, Source::Api);
     let mut activated_expression = false;
+    let undo = if matches!(src, Source::Twitch) && h.twitch_triggers.reset_active && h.twitch_triggers.cooldown_active { capture_undo(app, &h) } else { None };
+    if !matches!(src, Source::Twitch) {
+        // VTS: triggering the hotkey manually cancels its cooldown and pending auto-reset.
+        cancel(app, &h.id);
+    }
+    if h.action == "ChangeVTSModel" {
+        app.hk.hotkey_model_load = true;
+    }
     match h.action.as_str() {
         "TriggerAnimation" => {
             if let Some(a) = app.avatar.as_mut() {
@@ -743,12 +919,42 @@ pub fn trigger(app: &mut App, id_or_name: &str, src: Source) -> bool {
         }
         "TakeScreenshot" => app.ui.screenshot = Some(false),
         "ScreenColorOverlay" => {
-            let on = app.settings.light_mode == 0;
-            let mon = app.settings.light_monitor;
-            app.actions.push(Action::SetLight(if on { app.settings.light_last_mode.max(1) } else { 0 }, mon));
+            // VTS: applies the display light overlay settings recorded in the hotkey.
+            let o = h.extra.get("ColorOverlay").cloned().unwrap_or_default();
+            let st = &mut app.settings;
+            let num = |k: &str, d: f64| o[k].as_f64().unwrap_or(d) as f32;
+            if o["On"].as_bool().unwrap_or(false) {
+                st.light_brightness = num("BaseValue", st.light_brightness as f64);
+                st.light_overlay = num("OverlayValue", st.light_overlay as f64);
+                st.light_smoothing = num("Smoothing", st.light_smoothing as f64);
+                st.light_items = o["IncludeItems"].as_bool().unwrap_or(st.light_items);
+                let mode = if o["IsStaticColor"].as_bool().unwrap_or(false) {
+                    let c = &o["StaticColor"];
+                    st.light_color = [c["r"].as_f64().unwrap_or(1.0) as f32, c["g"].as_f64().unwrap_or(1.0) as f32, c["b"].as_f64().unwrap_or(1.0) as f32];
+                    3
+                } else if !o["WindowName"].as_str().unwrap_or("").is_empty() {
+                    st.light_window = o["WindowName"].as_str().unwrap_or("").to_string();
+                    2
+                } else {
+                    1
+                };
+                let mon = o["Display"].as_i64().unwrap_or(0).max(0) as usize;
+                app.actions.push(Action::SetLight(mode, mon));
+            } else {
+                let mon = app.settings.light_monitor;
+                app.actions.push(Action::SetLight(0, mon));
+            }
         }
         "RemoveAllItems" => app.actions.push(Action::ClearItems),
-        "ToggleItemScene" => app.actions.push(Action::ToggleScene(h.file.clone())),
+        "ToggleItemScene" => {
+            let name = h.file.trim_end_matches(".json").to_string();
+            let loaded = app.toggle_scene(&name, h.fade_seconds_amount.max(0.0));
+            if loaded && h.deactivate_after_seconds {
+                app.hk.deactivate_at.insert(h.id.clone(), Instant::now() + Duration::from_secs_f32(h.deactivate_after_seconds_amount.max(0.1)));
+            } else if !loaded {
+                app.hk.deactivate_at.remove(&h.id);
+            }
+        }
         "DownloadRandomWorkshopItem" => {
             let n = app.library.items.len();
             if n > 0 {
@@ -759,11 +965,17 @@ pub fn trigger(app: &mut App, id_or_name: &str, src: Source) -> bool {
             }
         }
         "ArtMeshColorPreset" => {
-            if let Some(a) = app.avatar.as_mut() {
-                for t in &mut a.art_tint {
-                    *t = [1.0; 4];
-                }
-            }
+            // VTS: loads the recorded multiply/screen preset; triggering it again (or an empty
+            // preset) removes the loaded preset.
+            let entries: Vec<crate::artmesh::IdValue> = h
+                .extra
+                .get("ColorScreenMultiplyPreset")
+                .and_then(|p| p.get("ArtMeshMultiplyAndScreenColors"))
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let same = app.hk.color_preset.as_ref().map(|p| p.0 == h.id).unwrap_or(false);
+            app.hk.color_preset = if same || entries.is_empty() { None } else { Some((h.id.clone(), entries)) };
+            app.apply_artmesh();
         }
         "ToggleTracker" => app.actions.push(if app.tracker.is_some() { Action::StopTracker } else { Action::StartTracker }),
         "ToggleTwitchFeature" => {
@@ -786,6 +998,25 @@ pub fn trigger(app: &mut App, id_or_name: &str, src: Source) -> bool {
                 }
             }
         }
+        "ExecuteItemAction" => {
+            // File = "<item folder name>::<hotkey name>" (VTS triggers it in every loaded instance).
+            let (item, name) = h.file.split_once("::").unwrap_or(("", h.file.as_str()));
+            let mut hit = 0;
+            for it in app.items.iter_mut() {
+                let folder = item_folder(&it.source);
+                if let crate::scene::Body::Live2D(l) = &mut it.body {
+                    if item.is_empty() || folder == item {
+                        if let Some(ih) = l.vts_hotkeys.iter().find(|x| x.name == name).cloned() {
+                            run_on_item(l, &ih);
+                            hit += 1;
+                        }
+                    }
+                }
+            }
+            if hit == 0 {
+                app.toast(format!("Live2D-предмет для действия «{}» не загружен", h.file));
+            }
+        }
         "ToggleUI" => app.ui.visible = !app.ui.visible,
         other => {
             app.toast(format!("Действие «{}» пока не поддерживается в rigrs", action_label(other)));
@@ -805,8 +1036,10 @@ pub fn trigger(app: &mut App, id_or_name: &str, src: Source) -> bool {
         app.hk.deactivate_at.remove(&h.id);
         app.hk.key_up.remove(&h.id);
     }
-    if matches!(src, Source::Twitch) && h.twitch_triggers.reset_active && h.twitch_triggers.cooldown_active {
-        app.hk.resets.push((h.id.clone(), Instant::now() + Duration::from_secs_f32(h.twitch_triggers.cooldown_seconds.max(1.0))));
+    if let Some(undo) = undo {
+        let due = Instant::now() + Duration::from_secs_f32(h.twitch_triggers.cooldown_seconds.max(1.0));
+        app.hk.resets.retain(|r| r.hotkey != h.id);
+        app.hk.resets.push(Reset { hotkey: h.id.clone(), due, undo, hide_dialog: h.twitch_triggers.hide_model_reset_dialog });
     }
 
     play_sounds(app, &h);
@@ -820,6 +1053,29 @@ pub fn trigger(app: &mut App, id_or_name: &str, src: Source) -> bool {
     true
 }
 
+/// Folder name of a Live2D item (how VTS lists item hotkeys).
+pub fn item_folder(source: &std::path::Path) -> String {
+    source.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// Item hotkeys VTS allows to trigger: expressions, remove expressions, animations.
+pub fn run_on_item(l: &mut crate::scene::live2d::Live2D, h: &Hotkey) {
+    match h.action.as_str() {
+        "ToggleExpression" => {
+            if let Some(e) = l.expressions.iter_mut().find(|e| e.file.ends_with(&h.file)) {
+                e.fade = h.fade_seconds_amount.max(0.0);
+                e.active = !e.active;
+            }
+        }
+        "RemoveAllExpressions" => l.expressions.iter_mut().for_each(|e| e.active = false),
+        "TriggerAnimation" => {
+            l.play_once(&h.file);
+        }
+        "ChangeIdleAnimation" => l.set_idle((!h.file.is_empty()).then_some(h.file.as_str())),
+        _ => {}
+    }
+}
+
 /// Undoes a toggled hotkey (expression off, …) — used by key-up, timers and gestures.
 fn deactivate(app: &mut App, id: &str) {
     let Some(h) = app.hotkeys().iter().find(|h| h.id == id).cloned() else { return };
@@ -830,6 +1086,10 @@ fn deactivate(app: &mut App, id: &str) {
                 e.active = false;
             }
         }
+    }
+    if h.action == "ToggleItemScene" {
+        let name = h.file.trim_end_matches(".json").to_string();
+        app.unload_scene(&name, h.fade_seconds_amount.max(0.0));
     }
     if h.sound_config.stop_when_inactive {
         stop_sounds(app, &h.id);

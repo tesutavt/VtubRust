@@ -149,6 +149,7 @@ pub struct App {
     pub twitch_login: Option<std::sync::mpsc::Receiver<crate::twitch::Msg>>,
     pub fx: crate::twitch_fx::Fx,
     pub ui_dt: f32,
+    pub ui_extra: crate::ui_model_extra::ModelExtraState,
     last: Instant,
     pub quit: bool,
     pub occluded: bool,
@@ -308,6 +309,7 @@ impl App {
             twitch_login: None,
             fx: Default::default(),
             ui_dt: 0.0,
+            ui_extra: Default::default(),
             last: Instant::now(),
             quit: false,
             occluded: false,
@@ -606,6 +608,7 @@ impl App {
                 self.settings.last_model = Some(key);
                 self.active_scene = None;
                 crate::hotkeys::on_model_loaded(self);
+                self.apply_artmesh();
                 self.save();
             }
             Err(err) => self.toast(format!("Не удалось загрузить модель: {err:#}")),
@@ -647,7 +650,13 @@ impl App {
             let scale = (vh * 0.25 / s.size[1]).min(vw * 0.25 / s.size[0]);
             (Body::Sprite(s), Xform { pos: [0.0, 0.0], scale, rot: 0.0, flip: false })
         };
-        Ok(Item { id, source: source.to_path_buf(), name, body, xf, front: true, locked: false, pin: None, pivot })
+        let mut it = Item::new(id, source.to_path_buf(), name, body, xf, pivot);
+        // New items go in front of everything else (next free order, as VTS does).
+        it.cfg.order = self.items.iter().map(|i| i.cfg.order).max().unwrap_or(0).max(0) + 1;
+        if let Some(fps) = self.settings.item_fps.get(&source.to_string_lossy().to_string()) {
+            it.cfg.fps = *fps;
+        }
+        Ok(it)
     }
 
     pub fn add_item(&mut self, source: &Path) -> Option<u64> {
@@ -670,15 +679,72 @@ impl App {
             .map(|i| SavedItem {
                 source: i.source.to_string_lossy().into_owned(),
                 xf: i.xf,
-                front: i.front,
+                front: i.front(),
                 locked: i.locked,
                 pin: i.pin.clone(),
+                cfg: Some(i.cfg.clone()),
+                scene: i.scene.clone(),
+                model: if i.pin.is_some() { self.model_key() } else { None },
             })
             .collect()
     }
 
+    /// Items of a scene currently in the scene (not fading out).
+    pub fn scene_loaded(&self, name: &str) -> bool {
+        self.items.iter().any(|i| i.scene.as_deref() == Some(name) && i.alpha_target > 0.0)
+    }
+
+    /// VTS item scene toggle: loads the scene (unloading other scenes of the same group),
+    /// or unloads its remaining items if any are still loaded. `fade` in seconds.
+    pub fn toggle_scene(&mut self, name: &str, fade: f32) -> bool {
+        if self.scene_loaded(name) {
+            self.unload_scene(name, fade);
+            return false;
+        }
+        let Some(sc) = self.settings.item_scenes.iter().find(|s| s.name == name).cloned() else {
+            self.toast(format!("Сцена элементов «{name}» не найдена"));
+            return false;
+        };
+        if !sc.group.is_empty() {
+            let same_group: Vec<String> = self.settings.item_scenes.iter().filter(|s| s.group == sc.group && s.name != sc.name).map(|s| s.name.clone()).collect();
+            for g in same_group {
+                self.unload_scene(&g, fade);
+            }
+        }
+        let model = self.model_key();
+        let saved: Vec<SavedItem> = sc.items.iter().filter(|s| s.pin.is_none() || s.model.is_none() || s.model == model).cloned().collect();
+        let before: Vec<u64> = self.items.iter().map(|i| i.id).collect();
+        self.restore_items_into(&saved, false);
+        for it in self.items.iter_mut().filter(|i| !before.contains(&i.id)) {
+            it.scene = Some(name.to_string());
+            if fade > 0.0 {
+                it.alpha = 0.0;
+                it.alpha_target = 1.0;
+                it.fade_speed = 1.0 / fade;
+            }
+        }
+        self.active_scene = Some(name.to_string());
+        true
+    }
+
+    pub fn unload_scene(&mut self, name: &str, fade: f32) {
+        for it in self.items.iter_mut().filter(|i| i.scene.as_deref() == Some(name)) {
+            it.alpha_target = 0.0;
+            it.fade_speed = if fade > 0.0 { 1.0 / fade } else { 0.0 };
+        }
+        if self.active_scene.as_deref() == Some(name) {
+            self.active_scene = None;
+        }
+    }
+
     pub fn restore_items(&mut self, saved: &[SavedItem]) {
-        self.items.clear();
+        self.restore_items_into(saved, true);
+    }
+
+    pub fn restore_items_into(&mut self, saved: &[SavedItem], clear: bool) {
+        if clear {
+            self.items.clear();
+        }
         for s in saved {
             if let Some(id) = self.add_item(Path::new(&s.source)) {
                 let av_ok = |p: &crate::scene::Pin, a: &Live2D| {
@@ -690,9 +756,13 @@ impl App {
                 };
                 if let Some(it) = self.items.iter_mut().find(|i| i.id == id) {
                     it.xf = s.xf;
-                    it.front = s.front;
+                    match &s.cfg {
+                        Some(c) => it.cfg = c.clone(),
+                        None => it.cfg.order = if s.front { it.cfg.order } else { -it.cfg.order },
+                    }
                     it.locked = s.locked;
                     it.pin = pin;
+                    it.scene = s.scene.clone();
                 }
             }
         }
@@ -902,6 +972,59 @@ impl App {
         }
     }
 
+    /// VTS item drag & drop: PNG/JPG/GIF files, PNG-frame folders and Live2D model folders
+    /// dropped on the window spawn at the centre of the scene.
+    pub fn on_dropped_file(&mut self, p: PathBuf) {
+        if !self.settings.item_drag_drop {
+            return;
+        }
+        let ok_img = ["png", "jpg", "jpeg", "gif"].iter().any(|e| p.extension().map(|x| x.eq_ignore_ascii_case(e)).unwrap_or(false));
+        let target = if p.is_dir() {
+            match library::model_in_dir(&p) {
+                Some(m) => Some(m.model3),
+                None if library::png_frames_dir(&p) => Some(p.clone()),
+                None => None,
+            }
+        } else if ok_img || p.to_string_lossy().ends_with(".model3.json") {
+            Some(p.clone())
+        } else {
+            None
+        };
+        match target {
+            Some(t) => {
+                if self.items.len() >= 120 {
+                    self.toast("Достигнут лимит предметов в сцене");
+                } else if let Some(id) = self.add_item(&t) {
+                    self.ui.selected = Some(id);
+                }
+            }
+            None => self.toast(format!("Этот файл нельзя добавить как предмет: {}", p.display())),
+        }
+    }
+
+    /// ArtMesh settings of the current model: user edits, else the model's .vtube.json.
+    pub fn artmesh_details(&self) -> Option<crate::artmesh::ArtMeshDetails> {
+        let key = self.model_key()?;
+        self.settings.model_artmesh.get(&key).cloned().or_else(|| self.avatar.as_ref().and_then(|a| a.vts_artmesh.clone()))
+    }
+
+    /// Re-applies ArtMesh colors / lighting multipliers to the current model.
+    pub fn apply_artmesh(&mut self) {
+        let d = self.artmesh_details().unwrap_or_default();
+        let preset = self.hk.color_preset.clone();
+        if let Some(a) = self.avatar.as_mut() {
+            a.apply_artmesh(&d);
+            if let Some((_, entries)) = preset {
+                for e in entries {
+                    if let (Some(i), Some((m, s))) = (a.drawable_index(&e.id), crate::artmesh::parse_colors(&e.value)) {
+                        a.art_tint[i] = m;
+                        a.art_screen[i] = s;
+                    }
+                }
+            }
+        }
+    }
+
     pub fn set_api(&mut self, on: bool) {
         self.settings.api_on = on;
         self.api = None;
@@ -1068,10 +1191,11 @@ impl App {
         }
         for it in &mut self.items {
             if let Some(a) = &self.avatar {
-                it.follow(a);
+                it.follow(a, dt);
             }
             it.update(dt, &self.inputs, &NEUTRAL, self.tracking, physics);
         }
+        self.items.retain(|i| !(i.alpha_target <= 0.0 && i.alpha <= 0.001));
         if let Some((_, s)) = &mut self.bg_sprite {
             s.update(dt);
         }
@@ -1331,7 +1455,10 @@ impl App {
 
     fn apply(&mut self, a: Action) {
         match a {
-            Action::LoadModel(e) => self.load_model(&e),
+            Action::LoadModel(e) => {
+                crate::hotkeys::before_model_change(self);
+                self.load_model(&e);
+            }
             Action::UnloadModel => {
                 if let Some(a) = &self.avatar {
                     self.api_events.push(("ModelLoadedEvent".into(), serde_json::json!({ "modelLoaded": false, "modelName": a.name, "modelID": a.model_id })));
@@ -1374,28 +1501,24 @@ impl App {
             }
             Action::Screenshot { transparent } => self.ui.screenshot = Some(transparent),
             Action::SaveScene(name) => {
-                let items = self.saved_items();
+                let items = self.saved_items().into_iter().map(|mut s| {
+                    s.scene = None;
+                    s
+                }).collect();
+                let group = self.settings.item_scenes.iter().find(|s| s.name == name).map(|s| s.group.clone()).unwrap_or_default();
                 self.settings.item_scenes.retain(|s| s.name != name);
-                self.settings.item_scenes.push(ItemScene { name: name.clone(), items });
+                self.settings.item_scenes.push(ItemScene { name: name.clone(), items, group });
                 self.toast(format!("Сцена «{name}» сохранена"));
                 self.save();
             }
             Action::LoadScene(name) => {
-                if let Some(s) = self.settings.item_scenes.iter().find(|s| s.name == name).cloned() {
-                    self.restore_items(&s.items);
+                if !self.scene_loaded(&name) {
+                    self.toggle_scene(&name, 0.0);
                 }
             }
             Action::ToggleScene(name) => {
                 let name = name.trim_end_matches(".json").to_string();
-                if self.active_scene.as_deref() == Some(name.as_str()) {
-                    self.items.clear();
-                    self.active_scene = None;
-                } else if let Some(s) = self.settings.item_scenes.iter().find(|s| s.name == name).cloned() {
-                    self.restore_items(&s.items);
-                    self.active_scene = Some(name);
-                } else {
-                    self.toast(format!("Сцена элементов «{name}» не найдена"));
-                }
+                self.toggle_scene(&name, 0.0);
             }
             Action::SetApi(on) => {
                 self.set_api(on);

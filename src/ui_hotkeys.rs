@@ -90,6 +90,17 @@ pub fn hotkeys_tab(app: &mut App, ui: &mut egui::Ui) {
     let mut start_rec = None;
     let cur_xf = app.avatar.as_ref().map(|a| a.xf);
     let (vw, vh) = app.viewport();
+    let art_colors = app.artmesh_details().map(|d| d.art_mesh_multiply_and_screen_colors.clone()).unwrap_or_default();
+    let light_now = {
+        let st = &app.settings;
+        serde_json::json!({
+            "On": st.light_mode != 0, "IsStaticColor": st.light_mode == 3, "Display": st.light_monitor as i64,
+            "WindowName": if st.light_mode == 2 { st.light_window.clone() } else { String::new() },
+            "IncludeLeft": false, "IncludeMid": true, "IncludeRight": false,
+            "BaseValue": st.light_brightness, "OverlayValue": st.light_overlay, "Smoothing": st.light_smoothing, "IncludeItems": st.light_items,
+            "StaticColor": { "r": st.light_color[0], "g": st.light_color[1], "b": st.light_color[2], "a": 1.0 },
+        })
+    };
     let scenes_active = app.active_scene.clone();
     let _ = scenes_active;
     for i in 0..n {
@@ -181,6 +192,30 @@ pub fn hotkeys_tab(app: &mut App, ui: &mut egui::Ui) {
                     ui.horizontal(|ui| {
                         ui.add_space(24.0);
                         toggle(ui, &mut h.load_model_settings.load_at_current_position, tr("Загрузить в текущей позиции"));
+                    });
+                }
+                "ArtMeshColorPreset" => {
+                    let n = h.extra.get("ColorScreenMultiplyPreset").and_then(|p| p["ArtMeshMultiplyAndScreenColors"].as_array()).map(|a| a.len()).unwrap_or(0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(24.0);
+                        if ui.button(tr("Записать текущие цвета модели")).clicked() {
+                            let colors = art_colors.clone();
+                            h.extra.insert("ColorScreenMultiplyPreset".into(), serde_json::json!({ "ArtMeshMultiplyAndScreenColors": colors }));
+                        }
+                        if ui.button(tr("Очистить")).on_hover_text(tr("Пустой пресет снимает загруженный пресет")).clicked() {
+                            h.extra.insert("ColorScreenMultiplyPreset".into(), serde_json::json!({ "ArtMeshMultiplyAndScreenColors": [] }));
+                        }
+                        ui.label(format!("{}: {n}", tr("частей в пресете")));
+                    });
+                }
+                "ScreenColorOverlay" => {
+                    let on = h.extra.get("ColorOverlay").map(|o| o["On"].as_bool().unwrap_or(false)).unwrap_or(false);
+                    ui.horizontal(|ui| {
+                        ui.add_space(24.0);
+                        if ui.button(tr("Записать текущие настройки освещения")).clicked() {
+                            h.extra.insert("ColorOverlay".into(), light_now.clone());
+                        }
+                        ui.label(if on { tr("наложение: вкл.") } else { tr("наложение: выкл.") });
                     });
                 }
                 _ => {}
@@ -387,6 +422,18 @@ fn file_choices(app: &mut App, action: &str) -> Vec<(String, String)> {
         "ChangeBackground" => app.library.backgrounds.iter().filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).map(|n| (n.clone(), n)).collect(),
         "ChangeVTSModel" => app.library.models.iter().map(|m| (m.name.clone(), m.name.clone())).collect(),
         "ToggleItemScene" => app.settings.item_scenes.iter().map(|s| (s.name.clone(), s.name.clone())).collect(),
+        "ExecuteItemAction" => {
+            let mut v = Vec::new();
+            for e in &app.library.items {
+                let crate::library::ItemEntry::Live2D(m) = e else { continue };
+                let Some(vt) = m.vtube.as_ref().and_then(|p| crate::formats::read_json::<crate::formats::VtubeJson>(p).ok()) else { continue };
+                let folder = hotkeys::item_folder(&m.model3);
+                for h in vt.hotkeys.iter().filter(|h| !h.name.is_empty() && ["ToggleExpression", "RemoveAllExpressions", "TriggerAnimation", "ChangeIdleAnimation"].contains(&h.action.as_str())) {
+                    v.push((format!("{folder}::{}", h.name), format!("{folder} → {}", h.name)));
+                }
+            }
+            v
+        }
         "ToggleTwitchFeature" => TWITCH_FEATURES.iter().map(|f| (f.0.to_string(), tr(f.1).to_string())).collect(),
         "LoadEffectPreset" => {
             let mut v = vec![(String::new(), tr("Вкл./выкл. все эффекты").to_string())];
@@ -587,6 +634,8 @@ fn twitch_triggers_dialog(app: &mut App, ctx: &Context, i: usize) {
     };
     dim(ctx, "tw-dim");
     let mut test = false;
+    let mut cancel_cd = false;
+    let cooldown_left = app.hk.cooldown.get(&h.id).map(|t| h.twitch_triggers.cooldown_seconds - t.elapsed().as_secs_f32()).filter(|l| *l > 0.0 && h.twitch_triggers.cooldown_active);
     let mut active = h.twitch_triggers.active;
     top_bar(app, ctx, "tw-top", &mut active, &mut test);
     h.twitch_triggers.active = active;
@@ -700,6 +749,14 @@ fn twitch_triggers_dialog(app: &mut App, ctx: &Context, i: usize) {
             pink_row(ui, &mut t.shoutout, "Триггер отметки Twitch", "Активируется при отметке любого пользователя");
             pink_row(ui, &mut t.ad_break, "Триггер рекламной паузы Twitch", "Активируется при запуске рекламной паузы");
         });
+        if let Some(left) = cooldown_left {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{} {:.0} {}", tr("Период ожидания активен:"), left, tr("с"))).color(PINK));
+                if ui.small_button("✖").on_hover_text(tr("Отменить период ожидания и сброс")).clicked() {
+                    cancel_cd = true;
+                }
+            });
+        }
         ui.add_space(8.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.add_sized([180.0, 40.0], egui::Button::new(RichText::new("OK").size(18.0).color(Color32::WHITE)).fill(Color32::from_rgb(14, 150, 240)).rounding(3.0)).clicked() {
@@ -708,6 +765,9 @@ fn twitch_triggers_dialog(app: &mut App, ctx: &Context, i: usize) {
         });
     });
     let id = h.id.clone();
+    if cancel_cd {
+        hotkeys::cancel(app, &id);
+    }
     if let Some(slot) = app.hotkeys_mut().and_then(|l| l.get_mut(i)) {
         *slot = h;
     }
@@ -1200,4 +1260,38 @@ pub fn twitch_card(app: &mut App, ui: &mut egui::Ui) {
             app.ui.modal_sel = None;
         }
     });
+}
+
+/// VTS: a pending "load previous model" auto-reset shows a notice (top right) that can cancel it.
+pub fn reset_notice(app: &mut App, ctx: &Context) {
+    let list: Vec<(String, String, f32)> = app
+        .hk
+        .resets
+        .iter()
+        .filter(|r| !r.hide_dialog)
+        .filter_map(|r| match &r.undo {
+            hotkeys::Undo::Model(_, name) => Some((r.hotkey.clone(), name.clone(), r.due.saturating_duration_since(std::time::Instant::now()).as_secs_f32())),
+            _ => None,
+        })
+        .collect();
+    if list.is_empty() {
+        return;
+    }
+    let mut cancel = None;
+    egui::Area::new(egui::Id::new("reset-notice")).anchor(Align2::RIGHT_TOP, [-16.0, 16.0]).order(egui::Order::Foreground).show(ctx, |ui| {
+        for (id, name, left) in &list {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{} «{name}» {} {:.0} {}", tr("Возврат к модели"), tr("через"), left, tr("с")));
+                    if ui.button("✖").on_hover_text(tr("Отменить")).clicked() {
+                        cancel = Some(id.clone());
+                    }
+                });
+            });
+        }
+    });
+    if let Some(id) = cancel {
+        app.hk.resets.retain(|r| r.hotkey != id);
+    }
+    ctx.request_repaint();
 }

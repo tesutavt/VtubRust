@@ -87,6 +87,12 @@ fn scan_models(root: &Path, out: &mut Vec<ModelEntry>) {
     }
 }
 
+pub fn png_frames_dir(p: &Path) -> bool {
+    std::fs::read_dir(p)
+        .map(|rd| rd.flatten().any(|e| e.path().extension().map(|x| x.eq_ignore_ascii_case("png")).unwrap_or(false)))
+        .unwrap_or(false)
+}
+
 fn scan_items(root: &Path, out: &mut Vec<ItemEntry>) {
     let Ok(rd) = std::fs::read_dir(root) else { return };
     let mut paths: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
@@ -95,6 +101,10 @@ fn scan_items(root: &Path, out: &mut Vec<ItemEntry>) {
         if p.is_dir() {
             if let Some(m) = model_in_dir(&p) {
                 out.push(ItemEntry::Live2D(m));
+            } else if png_frames_dir(&p) {
+                // VTS: a folder of PNGs is an animated item.
+                let name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                out.push(ItemEntry::Image { name, path: p });
             }
         } else if is_image(&p) {
             let name = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
