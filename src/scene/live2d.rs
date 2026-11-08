@@ -147,6 +147,8 @@ pub struct Live2D {
     /// ArtMeshDetails from .vtube.json and userdata3 `vts_ignore_raycast` ids.
     pub vts_artmesh: Option<crate::artmesh::ArtMeshDetails>,
     pub ignore_raycast: Vec<String>,
+    /// Animation events of the last update: (type, time, data, animation file, length, idle).
+    pub anim_events: Vec<(&'static str, f32, String, String, f32, bool)>,
     /// ArtMesh highlighted in the settings list.
     pub highlight: Option<usize>,
     /// Physics strength forced by a plugin (SetCurrentModelPhysics).
@@ -389,6 +391,7 @@ impl Live2D {
             mosaic: 0.0,
             vts_artmesh: vt.as_ref().and_then(|v| v.art_mesh_details.clone()),
             highlight: None,
+            anim_events: Vec::new(),
             ignore_raycast: crate::artmesh::userdata_ignored(model3, m3.file_references.user_data.as_deref()),
             api_strength: None,
             texture_count: tex_count,
@@ -553,13 +556,25 @@ impl Live2D {
         }
         let m = &mut self.model;
         m.reset_pose();
-        let mo = if !tracking && self.lost_motion.is_some() { &mut self.lost_motion } else { &mut self.motion };
+        self.anim_events.clear();
+        let lost = !tracking && self.lost_motion.is_some();
+        let idle_name = if lost { self.cfg.lost_idle.clone() } else { self.idle.clone().unwrap_or_default() };
+        let mo = if lost { &mut self.lost_motion } else { &mut self.motion };
         if let Some(mo) = mo {
             mo.apply(m, dt);
+            let len = mo.duration();
+            for (k, t, d) in mo.events.drain(..) {
+                self.anim_events.push((k, t, d, idle_name.clone(), len, true));
+            }
         }
-        if let Some((mo, _, w)) = &mut self.oneshot {
+        if let Some((mo, name, w)) = &mut self.oneshot {
             *w = (*w + dt / 0.3).min(1.0);
-            if !mo.apply_once(m, dt, *w) {
+            let alive = mo.apply_once(m, dt, *w);
+            let len = mo.duration();
+            for (k, t, d) in mo.events.drain(..) {
+                self.anim_events.push((k, t, d, name.clone(), len, false));
+            }
+            if !alive {
                 self.oneshot = None;
             }
         }
@@ -811,6 +826,18 @@ impl Live2D {
     /// Topmost visible triangle under a world-space point.
     pub fn pick(&self, world: [f32; 2]) -> Option<Pick> {
         self.pick_filtered(world, |_| true)
+    }
+
+    /// All visible drawables under `world`, top to bottom.
+    pub fn pick_all(&self, world: [f32; 2]) -> Vec<usize> {
+        let mut out: Vec<usize> = Vec::new();
+        while let Some(p) = self.pick_filtered(world, |i| !out.contains(&i)) {
+            out.push(p.drawable);
+            if out.len() > 64 {
+                break;
+            }
+        }
+        out
     }
 
     /// Topmost visible drawable under `world` that passes `allow` (by drawable index).

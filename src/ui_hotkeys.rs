@@ -1184,6 +1184,145 @@ pub fn api_card(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
+/// ArtMeshSelectionRequest window.
+pub fn mesh_select(app: &mut App, ctx: &Context) {
+    let Some(sel) = app.mesh_select.as_mut() else { return };
+    let ids: Vec<String> = app.avatar.as_ref().map(|a| a.model.drawables.iter().map(|d| d.id.clone()).collect()).unwrap_or_default();
+    if ids.is_empty() {
+        let (s, r) = (sel.session, sel.request_id.clone());
+        app.mesh_select = None;
+        crate::api::reply(app, s, &r, "APIError", serde_json::json!({ "errorID": 1000, "message": "No model loaded." }));
+        return;
+    }
+    let mut done: Option<bool> = None;
+    let mut hover = None;
+    egui::Window::new(tr("Выбор частей модели"))
+        .id(egui::Id::new("mesh-select"))
+        .anchor(Align2::RIGHT_TOP, [-20.0, 20.0])
+        .default_width(420.0)
+        .collapsible(false)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::Label::new(RichText::new(&sel.text).size(16.0)).wrap());
+                if ui.button("?").clicked() {
+                    sel.show_help = !sel.show_help;
+                }
+            });
+            if sel.show_help {
+                ui.label(RichText::new(&sel.help).weak());
+            }
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut sel.filter).hint_text(tr("Фильтр")).desired_width(220.0));
+                if sel.at_click.is_some() && ui.button(tr("Сбросить фильтр по клику")).clicked() {
+                    sel.at_click = None;
+                }
+            });
+            let f = sel.filter.to_lowercase();
+            egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+                for id in ids.iter().rev() {
+                    if !f.is_empty() && !id.to_lowercase().contains(&f) {
+                        continue;
+                    }
+                    if let Some(c) = &sel.at_click {
+                        if !c.contains(id) {
+                            continue;
+                        }
+                    }
+                    let mut on = sel.active.contains(id);
+                    let r = ui.checkbox(&mut on, id);
+                    if r.hovered() {
+                        hover = Some(id.clone());
+                    }
+                    if r.changed() {
+                        if on {
+                            sel.active.insert(id.clone());
+                        } else {
+                            sel.active.remove(id);
+                        }
+                    }
+                }
+            });
+            let n = sel.active.len() as i64;
+            let ok = if sel.count > 0 { n == sel.count } else { n >= 1 };
+            ui.label(if sel.count > 0 { format!("{} {n} / {}", tr("Выбрано:"), sel.count) } else { format!("{} {n}", tr("Выбрано:")) });
+            ui.horizontal(|ui| {
+                if ui.add_enabled(ok, egui::Button::new("OK")).clicked() {
+                    done = Some(true);
+                }
+                if ui.button(tr("Отмена")).clicked() {
+                    done = Some(false);
+                }
+            });
+        });
+    if let Some(a) = app.avatar.as_mut() {
+        a.highlight = hover.and_then(|h| a.drawable_index(&h));
+    }
+    if let Some(success) = done {
+        let sel = app.mesh_select.take().unwrap();
+        let active: Vec<&String> = ids.iter().filter(|i| sel.active.contains(*i)).collect();
+        let inactive: Vec<&String> = ids.iter().filter(|i| !sel.active.contains(*i)).collect();
+        crate::api::reply(app, sel.session, &sel.request_id, "ArtMeshSelectionResponse", serde_json::json!({ "success": success, "activeArtMeshes": active, "inactiveArtMeshes": inactive }));
+        if let Some(a) = app.avatar.as_mut() {
+            a.highlight = None;
+        }
+    }
+}
+
+pub fn editor_card(app: &mut App, ui: &mut egui::Ui) {
+    section(ui, "Live2D Cubism Editor API", |ui| {
+        let mut on = app.settings.editor_on;
+        if toggle(ui, &mut on, tr("Запустить")).changed() {
+            app.set_editor(on);
+            app.save();
+        }
+        let mut remote = app.settings.editor_remote;
+        if toggle(ui, &mut remote, tr("Подключиться к Editor на удалённом ПК")).changed() {
+            app.settings.editor_remote = remote;
+            if app.settings.editor_on {
+                app.set_editor(true);
+            }
+        }
+        ui.horizontal(|ui| {
+            if app.settings.editor_remote {
+                ui.label("IP");
+                ui.add(egui::TextEdit::singleline(&mut app.settings.editor_ip).desired_width(140.0));
+            }
+            ui.label(tr("Порт"));
+            let mut p = app.settings.editor_port as f32;
+            if ui.add(egui::DragValue::new(&mut p).range(1.0..=65535.0)).changed() {
+                app.settings.editor_port = p as u16;
+            }
+            if app.settings.editor_on && ui.button(tr("Переподключиться")).clicked() {
+                app.set_editor(true);
+            }
+        });
+        let mut send = app.settings.editor_send;
+        if toggle(ui, &mut send, tr("Отправлять значения в редактор")).changed() {
+            app.settings.editor_send = send;
+            app.push_editor_event();
+        }
+        toggle(ui, &mut app.settings.editor_physics_only, tr("Только в окне физики"));
+        toggle(ui, &mut app.settings.editor_auto_import, tr("Копировать экспортированные модели в папку моделей"));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(tr("Статус:")).strong());
+            match &app.editor {
+                Some(e) => {
+                    status_dot(ui, if e.connected && e.approved { Color32::from_rgb(60, 190, 90) } else if e.connected { Color32::from_rgb(230, 180, 60) } else { Color32::from_rgb(230, 80, 80) });
+                    ui.label(tr(&e.status).to_string());
+                    if !e.edit_mode.is_empty() {
+                        ui.label(RichText::new(format!("· {}", e.edit_mode)).weak());
+                    }
+                }
+                None => {
+                    status_dot(ui, Color32::GRAY);
+                    ui.label(tr("Выкл."));
+                }
+            }
+        });
+        ui.label(RichText::new(tr("В Cubism Editor: «Файл» → «Настройки внешнего приложения» → запустить API, затем поставить галочку «Разрешить» для rigrs.")).size(13.0).weak());
+    });
+}
+
 pub fn twitch_card(app: &mut App, ui: &mut egui::Ui) {
     section(ui, "Настройки Twitch", |ui| {
         let mut on = app.settings.twitch.enabled;

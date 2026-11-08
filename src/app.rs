@@ -149,6 +149,10 @@ pub struct App {
     pub twitch_login: Option<std::sync::mpsc::Receiver<crate::twitch::Msg>>,
     pub fx: crate::twitch_fx::Fx,
     pub ui_dt: f32,
+    pub editor: Option<crate::cubism_editor::Editor>,
+    pub mesh_select: Option<crate::api_events::MeshSelect>,
+    /// Snapshot of the current model's config (hotkeys, other) to detect ModelConfigChangedEvent.
+    cfg_snapshot: (u64, u64),
     pub ui_extra: crate::ui_model_extra::ModelExtraState,
     last: Instant,
     pub quit: bool,
@@ -309,6 +313,9 @@ impl App {
             twitch_login: None,
             fx: Default::default(),
             ui_dt: 0.0,
+            editor: None,
+            mesh_select: None,
+            cfg_snapshot: (0, 0),
             ui_extra: Default::default(),
             last: Instant::now(),
             quit: false,
@@ -348,6 +355,9 @@ impl App {
         }
         if app.settings.twitch.enabled {
             app.set_twitch(true);
+        }
+        if app.settings.editor_on {
+            app.set_editor(true);
         }
         // Dev hook for screenshots/tests: RIGRS_OPEN_SETTINGS=general|camera|model|hotkeys
         if let Ok(t) = std::env::var("RIGRS_OPEN_SETTINGS") {
@@ -1025,6 +1035,67 @@ impl App {
         }
     }
 
+    pub fn set_editor(&mut self, on: bool) {
+        self.settings.editor_on = on;
+        self.editor = None;
+        if on {
+            let st = &self.settings;
+            let host = if st.editor_remote { st.editor_ip.trim().to_string() } else { "127.0.0.1".into() };
+            self.editor = Some(crate::cubism_editor::Editor::start(host, st.editor_port, st.editor_token.clone()));
+        }
+        self.push_editor_event();
+    }
+
+    /// Live2DCubismEditorConnectedEvent payload.
+    pub fn editor_state(&self) -> serde_json::Value {
+        serde_json::json!({
+            "tryingToConnect": self.settings.editor_on,
+            "connected": self.editor.as_ref().map(|e| e.connected && e.approved).unwrap_or(false),
+            "shouldSendParameters": self.settings.editor_send,
+        })
+    }
+
+    pub fn push_editor_event(&mut self) {
+        let st = self.editor_state();
+        self.api_events.push(("Live2DCubismEditorConnectedEvent".into(), st));
+    }
+
+    fn update_editor(&mut self) {
+        use crate::cubism_editor::Msg;
+        let Some(ed) = self.editor.as_mut() else { return };
+        let msgs = ed.drain();
+        let sending = ed.approved && self.settings.editor_send && (!self.settings.editor_physics_only || ed.edit_mode == "Physics");
+        if sending {
+            if let Some(a) = &self.avatar {
+                let vals = a.model.params();
+                ed.send_params(a.model.param_ids.iter().cloned().zip(vals.iter().copied()).collect());
+            }
+        }
+        for m in msgs {
+            match m {
+                Msg::Token(t) => {
+                    self.settings.editor_token = t;
+                    self.save();
+                }
+                Msg::State { .. } => self.push_editor_event(),
+                Msg::Exported(p) => {
+                    if self.settings.editor_auto_import {
+                        match crate::cubism_editor::import_export(Path::new(&p), &self.paths.data.join("Live2DModels")) {
+                            Ok(d) => {
+                                self.rescan();
+                                self.toast(format!("Модель из Cubism Editor скопирована: {}", d.display()));
+                            }
+                            Err(e) => self.toast(format!("Не удалось скопировать модель из Cubism Editor: {e:#}")),
+                        }
+                    } else {
+                        self.toast(format!("Cubism Editor: экспортирована модель {p}"));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn set_api(&mut self, on: bool) {
         self.settings.api_on = on;
         self.api = None;
@@ -1131,6 +1202,30 @@ impl App {
 
     pub fn save(&mut self) {
         self.remember_avatar_xf();
+        // ModelConfigChangedEvent when the user changed the loaded model's config.
+        if let Some(key) = self.model_key() {
+            use std::hash::{Hash, Hasher};
+            let h = |v: String| {
+                let mut s = std::collections::hash_map::DefaultHasher::new();
+                v.hash(&mut s);
+                s.finish()
+            };
+            let hk = h(serde_json::to_string(&self.settings.model_hotkeys.get(&key)).unwrap_or_default());
+            let other = h(format!(
+                "{}{}{}{}",
+                serde_json::to_string(&self.settings.model_cfg.get(&key)).unwrap_or_default(),
+                serde_json::to_string(&self.settings.rules_override.get(&key)).unwrap_or_default(),
+                serde_json::to_string(&self.settings.model_artmesh.get(&key)).unwrap_or_default(),
+                self.settings.idle_override.get(&key).cloned().unwrap_or_default()
+            ));
+            let (ohk, oother) = self.cfg_snapshot;
+            if (ohk != 0 || oother != 0) && (hk != ohk || other != oother) {
+                let mut ev = crate::api::model_config_event(self);
+                ev["hotkeyConfigChanged"] = serde_json::json!(hk != ohk);
+                self.api_events.push(("ModelConfigChangedEvent".into(), ev));
+            }
+            self.cfg_snapshot = (hk, other);
+        }
         if self.settings.save_scene {
             self.settings.last_items = self.saved_items();
         }
@@ -1161,6 +1256,7 @@ impl App {
         }
         crate::api::pump(self, dt);
         self.update_twitch();
+        self.update_editor();
         let (vw, vh) = self.viewport();
         self.ui_dt = dt;
 
@@ -1196,6 +1292,30 @@ impl App {
             it.update(dt, &self.inputs, &NEUTRAL, self.tracking, physics);
         }
         self.items.retain(|i| !(i.alpha_target <= 0.0 && i.alpha <= 0.001));
+        if self.api.is_some() {
+            let mut evs = Vec::new();
+            if let Some(a) = &self.avatar {
+                for e in &a.anim_events {
+                    evs.push((e.clone(), a.model_id.clone(), a.name.clone(), false));
+                }
+            }
+            for it in &self.items {
+                if let Body::Live2D(l) = &it.body {
+                    for e in &l.anim_events {
+                        evs.push((e.clone(), l.model_id.clone(), l.name.clone(), true));
+                    }
+                }
+            }
+            for ((k, t, d, name, len, idle), mid, mname, item) in evs {
+                self.api_events.push((
+                    "ModelAnimationEvent".into(),
+                    serde_json::json!({
+                        "animationEventType": k, "animationEventTime": t, "animationEventData": d, "animationName": name,
+                        "animationLength": len, "isIdleAnimation": idle, "modelID": mid, "modelName": mname, "isLive2DItem": item,
+                    }),
+                ));
+            }
+        }
         if let Some((_, s)) = &mut self.bg_sprite {
             s.update(dt);
         }

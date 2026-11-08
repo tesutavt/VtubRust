@@ -79,6 +79,11 @@ pub struct Motion {
     looped: bool,
     curves: Vec<Curve>,
     time: f32,
+    started: bool,
+    /// Custom animation events (time, text).
+    user_data: Vec<(f32, String)>,
+    /// Events raised by the last apply: ("Start" | "End" | "Custom", time, data).
+    pub events: Vec<(&'static str, f32, String)>,
 }
 
 fn parse_segments(s: &[f32]) -> (f32, Vec<Seg>) {
@@ -126,17 +131,36 @@ impl Motion {
                 Some(Curve { target, first, segs, cursor: 0 })
             })
             .collect();
-        Motion { duration: json.meta.duration.max(0.0), looped: json.meta.r#loop, curves, time: 0.0 }
+        let user_data = json.user_data.iter().filter(|u| u.value.len() <= 256 && u.value != "Anim_Start" && u.value != "Anim_End").map(|u| (u.time, u.value.clone())).collect();
+        Motion { duration: json.meta.duration.max(0.0), looped: json.meta.r#loop, curves, time: 0.0, started: false, user_data, events: Vec::new() }
     }
 
     pub fn duration(&self) -> f32 {
         self.duration
     }
 
+    /// Custom events in (t0, t1].
+    fn custom_between(&mut self, t0: f32, t1: f32) {
+        for (t, v) in &self.user_data {
+            if *t > t0 && *t <= t1 && *t <= self.duration {
+                self.events.push(("Custom", *t, v.clone()));
+            }
+        }
+    }
+
     /// Plays once (no looping); returns false when finished.
     pub fn apply_once(&mut self, model: &mut Model, dt: f32, weight: f32) -> bool {
+        self.events.clear();
+        if !self.started {
+            self.started = true;
+            self.events.push(("Start", 0.0, "Anim_Start".into()));
+            self.custom_between(-1.0, 0.0);
+        }
+        let t0 = self.time;
         self.time += dt;
+        self.custom_between(t0, self.time.min(self.duration));
         if self.time >= self.duration {
+            self.events.push(("End", self.duration, "Anim_End".into()));
             return false;
         }
         let t = self.time;
@@ -154,11 +178,25 @@ impl Motion {
     }
 
     pub fn apply(&mut self, model: &mut Model, dt: f32) {
+        self.events.clear();
+        if !self.started {
+            self.started = true;
+            self.events.push(("Start", 0.0, "Anim_Start".into()));
+            self.custom_between(-1.0, 0.0);
+        }
+        let t0 = self.time;
         self.time += dt;
         if self.duration > 0.0 {
-            if self.looped || true {
-                // Idle animations are always looped, whatever the file says.
+            let _ = self.looped;
+            // Idle animations are always looped, whatever the file says.
+            if self.time >= self.duration {
+                self.custom_between(t0, self.duration);
+                self.events.push(("End", self.duration, "Anim_End".into()));
                 self.time %= self.duration;
+                self.events.push(("Start", 0.0, "Anim_Start".into()));
+                self.custom_between(-1.0, self.time);
+            } else {
+                self.custom_between(t0, self.time);
             }
         }
         let t = self.time;

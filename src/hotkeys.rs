@@ -346,7 +346,7 @@ pub const ACTIONS: &[(&str, &str, bool, bool)] = &[
     ("ToggleTracker", "Вкл./выкл. трекер", true, false),
     ("ToggleTwitchFeature", "Вкл./выкл. функцию Twitch", true, true),
     ("LoadEffectPreset", "Загрузить пресет эффектов", true, true),
-    ("ToggleLive2DEditorAPI", "Синхронизация параметров с Live2D Editor API", false, false),
+    ("ToggleLive2DEditorAPI", "Синхронизация параметров с Live2D Editor API", true, false),
     ("WebItemAction", "Запустить действие веб-элемента", false, false),
     ("ToggleModelSound", "Toggle Model Volume", false, false),
     ("ToggleUI", "Показать/скрыть интерфейс (rigrs)", true, false),
@@ -1016,6 +1016,10 @@ pub fn trigger(app: &mut App, id_or_name: &str, src: Source) -> bool {
             if hit == 0 {
                 app.toast(format!("Live2D-предмет для действия «{}» не загружен", h.file));
             }
+        }
+        "ToggleLive2DEditorAPI" => {
+            app.settings.editor_send = !app.settings.editor_send;
+            app.push_editor_event();
         }
         "ToggleUI" => app.ui.visible = !app.ui.visible,
         other => {

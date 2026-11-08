@@ -185,6 +185,18 @@ pub struct Motion3 {
     pub meta: MotionMeta,
     #[serde(default)]
     pub curves: Vec<MotionCurve>,
+    /// Animation events ("Add Event" in the Cubism Animator, exported with "Export Event").
+    #[serde(default)]
+    pub user_data: Vec<MotionUserData>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct MotionUserData {
+    #[serde(default)]
+    pub time: f32,
+    #[serde(default)]
+    pub value: String,
 }
 
 #[derive(Deserialize, Debug)]

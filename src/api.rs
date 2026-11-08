@@ -67,8 +67,9 @@ enum Incoming {
 pub struct Session {
     tx: Sender<String>,
     pub plugin: Option<(String, String)>,
-    events: HashMap<String, Value>,
+    pub events: HashMap<String, Value>,
     pending_prompt: bool,
+    pub ev: crate::api_events::EvState,
 }
 
 pub struct ApiServer {
@@ -224,6 +225,10 @@ fn event_passes(name: &str, cfg: &Value, data: &Value) -> bool {
             }
         }
         "ModelClickedEvent" => !(cfg["onlyClicksOnModel"].as_bool() == Some(true) && data["modelWasClicked"].as_bool() != Some(true)),
+        "ModelAnimationEvent" => {
+            !(cfg["ignoreLive2DItems"].as_bool() == Some(true) && data["isLive2DItem"].as_bool() == Some(true))
+                && !(cfg["ignoreIdleAnimations"].as_bool() == Some(true) && data["isIdleAnimation"].as_bool() == Some(true))
+        }
         "ItemEvent" => {
             let by_id = cfg["itemInstanceIDs"].as_array().filter(|a| !a.is_empty());
             let by_file = cfg["itemFileNames"].as_array().filter(|a| !a.is_empty());
@@ -282,7 +287,7 @@ pub fn pump(app: &mut App, dt: f32) {
     while let Ok(m) = srv.rx.try_recv() {
         match m {
             Incoming::Connected(id, tx) => {
-                srv.sessions.insert(id, Session { tx, plugin: None, events: HashMap::new(), pending_prompt: false });
+                srv.sessions.insert(id, Session { tx, plugin: None, events: HashMap::new(), pending_prompt: false, ev: Default::default() });
             }
             Incoming::Disconnected(id) => {
                 srv.sessions.remove(&id);
@@ -320,6 +325,18 @@ pub fn pump(app: &mut App, dt: f32) {
             }
         }
     }
+    let ids: Vec<u64> = srv.sessions.keys().copied().collect();
+    for id in ids {
+        let Some(s) = srv.sessions.get_mut(&id) else { continue };
+        let evs = s.events.clone();
+        if evs.is_empty() {
+            continue;
+        }
+        let out = crate::api_events::tick(app, &evs, &mut s.ev);
+        for (name, data) in out {
+            let _ = s.tx.send(envelope(&random_hex(16), name, data));
+        }
+    }
     if srv.subscribed("ModelMovedEvent") {
         if let Some(pos) = model_position(app) {
             let key = (pos["positionX"].as_f64().unwrap_or(0.0) as f32, pos["positionY"].as_f64().unwrap_or(0.0) as f32, pos["size"].as_f64().unwrap_or(0.0) as f32, pos["rotation"].as_f64().unwrap_or(0.0) as f32);
@@ -338,6 +355,13 @@ pub fn pump(app: &mut App, dt: f32) {
         srv.emit("TrackingStatusChangedEvent", &json!({ "faceFound": st.0, "leftHandFound": st.1, "rightHandFound": st.2 }));
     }
     app.api = Some(srv);
+}
+
+/// Sends a response to one plugin session (deferred replies).
+pub fn reply(app: &App, session: u64, request_id: &str, message_type: &str, data: Value) {
+    if let Some(s) = app.api.as_ref().and_then(|srv| srv.sessions.get(&session)) {
+        let _ = s.tx.send(envelope(request_id, message_type, data));
+    }
 }
 
 /// Answers a prompt shown to the user (token or permission).
@@ -694,6 +718,33 @@ fn handle_message(app: &mut App, srv: &mut ApiServer, sid: u64, text: &str) -> O
         }
         "PostProcessingListRequest" => Ok(post_processing_list(app, &data)),
         "PostProcessingUpdateRequest" => post_processing_update(app, &data),
+        "ArtMeshSelectionRequest" => {
+            let active: Vec<String> = data["activeArtMeshes"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+            match app.avatar.as_ref() {
+                None => err(1000, "No model loaded."),
+                Some(_) if app.mesh_select.is_some() || !app.api_prompts.is_empty() || app.ui.modal.is_some() => err(1001, "Other windows are open."),
+                Some(a) if active.len() > a.model.drawables.len() => err(1003, "ArtMesh ID list too long."),
+                Some(a) if active.iter().any(|id| a.drawable_index(id).is_none()) => err(1002, "Model does not have this ArtMesh."),
+                Some(_) => {
+                    let txt = |k: &str, d: &str| data[k].as_str().filter(|s| (4..=1024).contains(&s.chars().count())).unwrap_or(d).to_string();
+                    app.mesh_select = Some(crate::api_events::MeshSelect {
+                        session: sid,
+                        request_id: rid.clone(),
+                        text: txt("textOverride", "Плагин «{plugin}» просит выбрать части модели (ArtMesh)."),
+                        help: txt("helpOverride", "Отметьте нужные части модели и нажмите OK. Клик по модели фильтрует список по частям под курсором."),
+                        count: data["requestedArtMeshCount"].as_i64().unwrap_or(0),
+                        active: active.into_iter().collect(),
+                        filter: String::new(),
+                        at_click: None,
+                        show_help: false,
+                    });
+                    if let Some(m) = app.mesh_select.as_mut() {
+                        m.text = m.text.replace("{plugin}", &plugin);
+                    }
+                    return None;
+                }
+            }
+        }
         "PermissionRequest" => {
             let perm = data["requestedPermission"].as_str().unwrap_or("").to_string();
             if !PERMISSIONS.contains(&perm.as_str()) {
@@ -706,9 +757,10 @@ fn handle_message(app: &mut App, srv: &mut ApiServer, sid: u64, text: &str) -> O
             }
         }
         "EventSubscriptionRequest" => {
-            const EVENTS: [&str; 12] = [
+            const EVENTS: [&str; 16] = [
                 "TestEvent", "ModelLoadedEvent", "TrackingStatusChangedEvent", "BackgroundChangedEvent", "ModelConfigChangedEvent", "ModelMovedEvent",
                 "HotkeyTriggeredEvent", "ExpressionToggledEvent", "ItemEvent", "ModelClickedEvent", "PostProcessingEvent", "ModelAnimationEvent",
+                "ModelOutlineEvent", "Live2DCubismEditorConnectedEvent", "ArtMeshTrackingEvent", "ArtMeshOutlineEvent",
             ];
             let name = data["eventName"].as_str().unwrap_or("");
             let sub = data["subscribe"].as_bool().unwrap_or(true);
@@ -720,9 +772,19 @@ fn handle_message(app: &mut App, srv: &mut ApiServer, sid: u64, text: &str) -> O
                 err(950, "Unknown event type.")
             } else if name == "TestEvent" && data["config"]["testMessageForEvent"].as_str().map(|m| m.chars().count() > 32).unwrap_or(false) {
                 err(100000, "Test message too long.")
+            } else if let (true, Err((code, msg))) = (sub, crate::api_events::validate(name, &data["config"])) {
+                Err((code, msg))
             } else {
                 if sub {
                     s.events.insert(name.to_string(), data["config"].clone());
+                    // Re-subscribing resets the event counter (VTS).
+                    s.ev.counter.remove(name);
+                    s.ev.sent_unloaded.remove(name);
+                    if name == "Live2DCubismEditorConnectedEvent" {
+                        // Sent once right after subscribing with the initial state.
+                        let st = app.editor_state();
+                        let _ = s.tx.send(envelope(&random_hex(16), name, st));
+                    }
                 } else {
                     s.events.remove(name);
                 }

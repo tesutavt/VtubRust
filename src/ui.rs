@@ -305,6 +305,8 @@ pub fn run(app: &mut App, ctx: &Context) {
     }
     crate::ui_hotkeys::screen_buttons(app, ctx);
     crate::ui_hotkeys::reset_notice(app, ctx);
+    crate::ui_hotkeys::mesh_select(app, ctx);
+    crate::api_events::draw_debug(app, ctx);
     let dt = app.ui_dt;
     crate::twitch_fx::run(app, ctx, dt);
     crate::ui_hotkeys::api_prompt(app, ctx);
@@ -459,6 +461,16 @@ fn scene_input(app: &mut App, ctx: &Context) {
         Hit::Nothing
     };
 
+    // ArtMeshSelectionRequest: a click on the model filters the list to the meshes under it.
+    if pp {
+        if let (Some(sel), Some(a)) = (app.mesh_select.as_mut(), app.avatar.as_ref()) {
+            let under: Vec<String> = a.pick_all(w).into_iter().map(|d| a.model.drawables[d].id.clone()).collect();
+            if !under.is_empty() {
+                sel.at_click = Some(under);
+                return;
+            }
+        }
+    }
     if pp || sp {
         let item_id = if let Hit::Item(k) = hit { Some(app.items[k].id) } else { None };
         crate::api::on_click(app, w, [pos.x * ppp, pos.y * ppp], if pp { 0 } else { 1 }, item_id);
@@ -1089,7 +1101,7 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
     stub_card(ui, tr("Настройки Wi-Fi-соединения"), &["Запустить сервер"], "Сервер отключен");
     stub_card(ui, tr("Настройки USB-соединения"), &["Подключиться через USB"], "Отключено");
     crate::ui_hotkeys::api_card(app, ui);
-    stub_card(ui, "Live2D Cubism Editor API", &["Запустить", "Подключиться к Editor на удалённом ПК", "Отправлять значения в редактор"], "Выкл.");
+    crate::ui_hotkeys::editor_card(app, ui);
     section(ui, tr("Настройка ввода мыши"), |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("X: {:.0}", app.mouse[0])).size(17.0));
