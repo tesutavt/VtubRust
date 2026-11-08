@@ -25,6 +25,7 @@ mod ndi;
 mod record;
 mod tobii;
 mod lighting;
+mod lipsync;
 mod vfx;
 mod vfx_schema;
 mod vcam;

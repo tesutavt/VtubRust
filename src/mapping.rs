@@ -56,7 +56,19 @@ pub mod input {
     pub const HAND_RIGHT_FINGER_3: usize = 46;
     pub const HAND_RIGHT_FINGER_4: usize = 47;
     pub const HAND_RIGHT_FINGER_5: usize = 48;
-    pub const COUNT: usize = 49;
+    pub const VOICE_FREQUENCY: usize = 49;
+    pub const VOICE_VOLUME: usize = 50;
+    pub const VOICE_VOLUME_PLUS_MOUTH_OPEN: usize = 51;
+    pub const VOICE_FREQUENCY_PLUS_MOUTH_SMILE: usize = 52;
+    pub const VOICE_A: usize = 53;
+    pub const VOICE_I: usize = 54;
+    pub const VOICE_U: usize = 55;
+    pub const VOICE_E: usize = 56;
+    pub const VOICE_O: usize = 57;
+    pub const VOICE_SILENCE: usize = 58;
+    /// First controller input (VTS controller parameters, 39 values).
+    pub const CONTROLLER_FIRST: usize = 59;
+    pub const COUNT: usize = 98;
 }
 
 pub const INPUT_NAMES: [&str; input::COUNT] = [
@@ -71,7 +83,12 @@ pub const INPUT_NAMES: [&str; input::COUNT] = [
     "HandLeftOpen", "HandRightOpen",
     "HandLeftFinger_1_Thumb", "HandLeftFinger_2_Index", "HandLeftFinger_3_Middle", "HandLeftFinger_4_Ring", "HandLeftFinger_5_Pinky",
     "HandRightFinger_1_Thumb", "HandRightFinger_2_Index", "HandRightFinger_3_Middle", "HandRightFinger_4_Ring", "HandRightFinger_5_Pinky",
+    "VoiceFrequency", "VoiceVolume", "VoiceVolumePlusMouthOpen", "VoiceFrequencyPlusMouthSmile", "VoiceA", "VoiceI", "VoiceU", "VoiceE", "VoiceO", "VoiceSilence",
+    "ControllerStickLeftX", "ControllerStickLeftY", "ControllerStickRightX", "ControllerStickRightY", "ControllerStickPressLeft", "ControllerStickPressRight", "ControllerDPadX", "ControllerDPadY", "ControllerTriangle", "ControllerCross", "ControllerSquare", "ControllerCircle", "ControllerShoulderLeft", "ControllerShoulderRight", "ControllerTriggerLeft", "ControllerTriggerRight", "ControllerOptionLeft", "ControllerOptionRight", "ControllerHome", "ControllerTouchPadPress", "ControllerButtonsAnyLeft", "ControllerButtonsAnyRight", "ControllerButtonCountLeft", "ControllerButtonCountRight", "ControllerLean", "ControllerThumbPosLeft", "ControllerThumbPosRight", "ControllerFingerPosLeft", "ControllerFingerPosRight", "ControllerTouchPadTouchCount", "ControllerTouchPadFingerLeftActive", "ControllerTouchPadFingerRightActive", "ControllerTouchPadFingerLeftX", "ControllerTouchPadFingerLeftY", "ControllerTouchPadFingerRightX", "ControllerTouchPadFingerRightY", "ControllerOrientationX", "ControllerOrientationY", "ControllerOrientationZ",
 ];
+
+/// Controller input names in order (from `input::CONTROLLER_FIRST`).
+pub const CONTROLLER_NAMES: [&str; 39] = ["ControllerStickLeftX", "ControllerStickLeftY", "ControllerStickRightX", "ControllerStickRightY", "ControllerStickPressLeft", "ControllerStickPressRight", "ControllerDPadX", "ControllerDPadY", "ControllerTriangle", "ControllerCross", "ControllerSquare", "ControllerCircle", "ControllerShoulderLeft", "ControllerShoulderRight", "ControllerTriggerLeft", "ControllerTriggerRight", "ControllerOptionLeft", "ControllerOptionRight", "ControllerHome", "ControllerTouchPadPress", "ControllerButtonsAnyLeft", "ControllerButtonsAnyRight", "ControllerButtonCountLeft", "ControllerButtonCountRight", "ControllerLean", "ControllerThumbPosLeft", "ControllerThumbPosRight", "ControllerFingerPosLeft", "ControllerFingerPosRight", "ControllerTouchPadTouchCount", "ControllerTouchPadFingerLeftActive", "ControllerTouchPadFingerRightActive", "ControllerTouchPadFingerLeftX", "ControllerTouchPadFingerLeftY", "ControllerTouchPadFingerRightX", "ControllerTouchPadFingerRightY", "ControllerOrientationX", "ControllerOrientationY", "ControllerOrientationZ"];
 
 pub type Inputs = [f32; input::COUNT];
 
@@ -84,15 +101,12 @@ pub const NEUTRAL: Inputs = {
     v[input::EYE_OPEN_RIGHT] = 1.0;
     v[input::BROW_LEFT_Y] = 0.5;
     v[input::BROW_RIGHT_Y] = 0.5;
+    v[input::VOICE_FREQUENCY_PLUS_MOUTH_SMILE] = 0.5;
+    v[input::VOICE_SILENCE] = 1.0;
     v
 };
 
 pub fn input_index(name: &str) -> Option<usize> {
-    let name = match name {
-        "VoiceVolumePlusMouthOpen" => "MouthOpen",
-        "VoiceFrequencyPlusMouthSmile" => "MouthSmile",
-        n => n,
-    };
     INPUT_NAMES.iter().position(|n| *n == name)
 }
 

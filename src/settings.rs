@@ -195,6 +195,8 @@ pub struct Settings {
     pub vfx_on: bool,
     /// User allowed restricted/experimental effects (VTS "restricted effects").
     pub vfx_restricted: bool,
+    /// Microphone lipsync (VTS "Advanced Lipsync").
+    pub mic: crate::lipsync::MicCfg,
     /// VTS effect values by config enum ID (VTS EffectConfigs). Old-format "vfx" data is ignored.
     #[serde(rename = "vfx_vts")]
     pub vfx: crate::vfx::Values,
@@ -311,6 +313,7 @@ impl Default for Settings {
             vcam_mirror: false,
             vfx_on: false,
             vfx_restricted: false,
+            mic: Default::default(),
             vfx: Default::default(),
             smooth_masks: false,
             mask_atlas: 2048,

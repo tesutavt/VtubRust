@@ -151,6 +151,8 @@ pub struct App {
     pub ui_dt: f32,
     /// Microphone volume 0..1 (lipsync), also used by effects.
     pub mic_level: f32,
+    pub mic: Option<crate::lipsync::Mic>,
+    pub mic_devices: Vec<(String, String)>,
     /// Name of the loaded effect preset ("" = none).
     pub vfx_preset: String,
     /// Effect fade: (from, to, elapsed, duration).
@@ -319,6 +321,8 @@ impl App {
             fx: Default::default(),
             ui_dt: 0.0,
             mic_level: 0.0,
+            mic: None,
+            mic_devices: Vec::new(),
             vfx_preset: String::new(),
             vfx_fade: None,
             editor: None,
@@ -366,6 +370,9 @@ impl App {
         }
         if app.settings.editor_on {
             app.set_editor(true);
+        }
+        if app.settings.mic.on {
+            app.set_mic(true);
         }
         // Dev hook for screenshots/tests: RIGRS_OPEN_SETTINGS=general|camera|model|hotkeys
         if let Ok(t) = std::env::var("RIGRS_OPEN_SETTINGS") {
@@ -1064,6 +1071,47 @@ impl App {
         }
     }
 
+    pub fn set_mic(&mut self, on: bool) {
+        self.settings.mic.on = on;
+        self.mic = None;
+        if on {
+            self.mic = Some(crate::lipsync::Mic::start(&self.settings.mic));
+        }
+    }
+
+    /// Voice parameters from the microphone (VTS VoiceA/I/U/E/O, VoiceVolume, …).
+    fn update_voice(&mut self) {
+        use crate::mapping::input::*;
+        let mut finished = None;
+        let v = match &self.mic {
+            Some(m) => {
+                m.set_cfg(&self.settings.mic);
+                if let Some((key, _, Some(profile))) = m.calib_state() {
+                    finished = Some((key, profile));
+                }
+                m.voice()
+            }
+            None => crate::lipsync::Voice { silence: 1.0, ..Default::default() },
+        };
+        if let Some((key, profile)) = finished {
+            self.settings.mic.profiles.insert(key.clone(), profile);
+            self.toast(format!("Калибровка «{key}» завершена"));
+            self.save();
+        }
+        self.mic_level = v.volume;
+        let i = &mut self.inputs;
+        i[VOICE_VOLUME] = v.volume;
+        i[VOICE_FREQUENCY] = v.frequency;
+        i[VOICE_A] = v.vowels[0];
+        i[VOICE_I] = v.vowels[1];
+        i[VOICE_U] = v.vowels[2];
+        i[VOICE_E] = v.vowels[3];
+        i[VOICE_O] = v.vowels[4];
+        i[VOICE_SILENCE] = v.silence;
+        i[VOICE_VOLUME_PLUS_MOUTH_OPEN] = (i[MOUTH_OPEN] + v.volume).min(1.0);
+        i[VOICE_FREQUENCY_PLUS_MOUTH_SMILE] = (i[MOUTH_SMILE] + v.frequency).min(1.0);
+    }
+
     pub fn set_editor(&mut self, on: bool) {
         self.settings.editor_on = on;
         self.editor = None;
@@ -1276,6 +1324,7 @@ impl App {
         self.last = t0;
         self.time += dt;
         self.update_tracking();
+        self.update_voice();
         crate::api::apply_injections(self);
         self.update_mouse();
         self.update_tobii();

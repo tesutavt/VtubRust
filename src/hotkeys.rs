@@ -332,7 +332,7 @@ pub const ACTIONS: &[(&str, &str, bool, bool)] = &[
     ("RemoveAllExpressions", "Удалить все выражения", true, false),
     ("MoveModel", "Переместить модель", true, false),
     ("ChangeBackground", "Сменить фон", true, true),
-    ("ReloadMicrophone", "Перезагрузить микрофон", false, false),
+    ("ReloadMicrophone", "Перезагрузить микрофон", true, false),
     ("ReloadTextures", "Перезагрузить текстуру модели", true, false),
     ("CalibrateCam", "Откалибровать камеру", true, false),
     ("ChangeVTSModel", "Сменить модель VTS", true, true),
@@ -1025,6 +1025,10 @@ pub fn trigger(app: &mut App, id_or_name: &str, src: Source) -> bool {
             if hit == 0 {
                 app.toast(format!("Live2D-предмет для действия «{}» не загружен", h.file));
             }
+        }
+        "ReloadMicrophone" => {
+            // VTS: reloads the microphone (or turns it on when it is off).
+            app.set_mic(true);
         }
         "ToggleLive2DEditorAPI" => {
             app.settings.editor_send = !app.settings.editor_send;

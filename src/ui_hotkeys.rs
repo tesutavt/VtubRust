@@ -1268,6 +1268,102 @@ pub fn mesh_select(app: &mut App, ctx: &Context) {
     }
 }
 
+pub fn mic_card(app: &mut App, ui: &mut egui::Ui) {
+    section(ui, "Настройки микрофона", |ui| {
+        let mut on = app.settings.mic.on;
+        if toggle(ui, &mut on, tr("Микрофон (продвинутый липсинк)")).changed() {
+            app.set_mic(on);
+            app.save();
+        }
+        ui.horizontal(|ui| {
+            ui.label(tr("Устройство"));
+            let cur = if app.settings.mic.device_name.is_empty() { tr("По умолчанию").to_string() } else { app.settings.mic.device_name.clone() };
+            let resp = egui::ComboBox::from_id_salt("mic-dev").selected_text(cur).width(300.0).show_ui(ui, |ui| {
+                let mut pick = None;
+                if ui.selectable_label(app.settings.mic.device.is_empty(), tr("По умолчанию")).clicked() {
+                    pick = Some((String::new(), String::new()));
+                }
+                for (id, name) in &app.mic_devices {
+                    if ui.selectable_label(&app.settings.mic.device == id, name).clicked() {
+                        pick = Some((id.clone(), name.clone()));
+                    }
+                }
+                pick
+            });
+            if resp.response.clicked() || app.mic_devices.is_empty() {
+                app.mic_devices = crate::lipsync::list_devices();
+            }
+            if let Some(Some((id, name))) = resp.inner {
+                app.settings.mic.device = id;
+                app.settings.mic.device_name = name;
+                if app.settings.mic.on {
+                    app.set_mic(true);
+                }
+            }
+            if ui.button(tr("Перезагрузить")).clicked() {
+                app.set_mic(true);
+            }
+        });
+        let m = &mut app.settings.mic;
+        let row = |ui: &mut egui::Ui, label: &str, v: &mut f32| {
+            ui.horizontal(|ui| {
+                ui.add_sized([200.0, 20.0], egui::Label::new(tr(label)));
+                ui.add(egui::Slider::new(v, 0.0..=1.0));
+            });
+        };
+        row(ui, "Усиление громкости", &mut m.gain);
+        row(ui, "Порог громкости", &mut m.cutoff);
+        row(ui, "Усиление частоты", &mut m.freq_gain);
+        toggle(ui, &mut m.monitor, tr("Прослушивание (вывод микрофона в динамики)"));
+        // Live meters.
+        let inp = app.inputs;
+        use crate::mapping::input::*;
+        let meter = |ui: &mut egui::Ui, label: &str, v: f32| {
+            ui.horizontal(|ui| {
+                ui.add_sized([110.0, 18.0], egui::Label::new(label));
+                ui.add(egui::ProgressBar::new(v.clamp(0.0, 1.0)).desired_width(260.0));
+            });
+        };
+        meter(ui, "VoiceVolume", inp[VOICE_VOLUME]);
+        meter(ui, "VoiceFrequency", inp[VOICE_FREQUENCY]);
+        for (k, idx) in [VOICE_A, VOICE_I, VOICE_U, VOICE_E, VOICE_O].into_iter().enumerate() {
+            meter(ui, &format!("Voice{}", crate::lipsync::VOWELS[k]), inp[idx]);
+        }
+        meter(ui, "VoiceSilence", inp[VOICE_SILENCE]);
+        if let Some(mic) = &app.mic {
+            if let Some(e) = mic.error() {
+                ui.colored_label(Color32::from_rgb(220, 80, 80), e);
+            }
+        }
+        ui.add_space(6.0);
+        ui.label(RichText::new(tr("Калибровка: нажмите кнопку и тяните гласный звук ~2 секунды.")).size(13.0).weak());
+        let calib = app.mic.as_ref().and_then(|m| m.calib_progress());
+        ui.horizontal_wrapped(|ui| {
+            for k in ["A", "I", "U", "E", "O", "Silence"] {
+                let done = app.settings.mic.profiles.contains_key(k);
+                let label = match &calib {
+                    Some((c, p)) if c == k => format!("{k} {:.0}%", p * 100.0),
+                    _ => format!("{}{k}", if done { "✔ " } else { "" }),
+                };
+                if ui.add_enabled(app.mic.is_some(), egui::Button::new(label)).clicked() {
+                    if let Some(mic) = &app.mic {
+                        mic.calibrate(k);
+                    }
+                }
+            }
+            if ui.button(tr("Сбросить калибровку")).clicked() {
+                app.settings.mic.profiles.clear();
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label(tr("Веса VoiceFrequency A/I/U/E/O"));
+            for w in app.settings.mic.freq_weights.iter_mut() {
+                ui.add(egui::DragValue::new(w).speed(0.01).range(0.0..=1.0));
+            }
+        });
+    });
+}
+
 pub fn editor_card(app: &mut App, ui: &mut egui::Ui) {
     section(ui, "Live2D Cubism Editor API", |ui| {
         let mut on = app.settings.editor_on;
