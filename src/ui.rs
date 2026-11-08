@@ -1242,22 +1242,11 @@ fn info_text(id: u8) -> (&'static str, Vec<&'static str>) {
 }
 
 fn vfx_presets(app: &App) -> Vec<String> {
-    let dir = app.paths.data.join("vfx_presets");
-    let mut v: Vec<String> = std::fs::read_dir(&dir)
-        .map(|rd| {
-            rd.flatten()
-                .filter_map(|e| {
-                    let n = e.file_name().to_string_lossy().into_owned();
-                    n.strip_suffix(".json").map(str::to_string)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    v.sort();
-    v
+    crate::vfx::list_presets(&app.paths.data)
 }
 
 fn vfx_edit_dialog(app: &mut App, ctx: &Context, idx: usize) {
+    use crate::vfx::{Kind, Val};
     let Some(def) = crate::vfx::DEFS.get(idx) else {
         app.ui.modal = None;
         return;
@@ -1269,54 +1258,87 @@ fn vfx_edit_dialog(app: &mut App, ctx: &Context, idx: usize) {
     });
     let mut done = false;
     let mut back = false;
-    let w = 760.0f32.min(screen.width() - 40.0);
+    let w = 780.0f32.min(screen.width() - 40.0);
+    let items: Vec<String> = app.library.items.iter().filter_map(|e| match e {
+        crate::library::ItemEntry::Image { path, .. } if path.is_file() => path.file_name().map(|n| n.to_string_lossy().into_owned()),
+        _ => None,
+    }).collect();
+    let mut changed = false;
     egui::Area::new(egui::Id::new("vfx-edit")).order(egui::Order::Tooltip).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
         let resp = egui::Frame::none().fill(Color32::WHITE).rounding(6.0).inner_margin(egui::Margin { left: 26.0, right: 26.0, top: 46.0, bottom: 18.0 }).show(ui, |ui| {
             ui.set_width(w - 52.0);
             ui.style_mut().visuals.override_text_color = Some(TEXT);
-            ui.label(RichText::new(def.name).size(26.0));
+            ui.label(RichText::new(def.name()).size(26.0));
             if def.distorts {
                 ui.label(RichText::new(tr("Эффект искажает картинку: привязка предметов на экране может выглядеть смещённой.")).color(Color32::from_rgb(236, 30, 160)));
             }
+            if def.restricted && !app.settings.vfx_restricted {
+                ui.label(RichText::new(tr("Экспериментальный эффект: включите «Разрешить экспериментальные эффекты» в настройках эффектов.")).color(Color32::from_rgb(220, 90, 90)));
+            }
             ui.add_space(8.0);
-            let c = &mut app.settings.vfx[idx];
-            toggle(ui, &mut c.on, tr("Включить эффект"));
-            ui.add_space(6.0);
-            for (k, prm) in def.params.iter().enumerate() {
-                if k == 0 && !def.choices.is_empty() {
+            let v = &mut app.settings.vfx;
+            egui::ScrollArea::vertical().max_height(screen.height() - 260.0).show(ui, |ui| {
+                for c in def.configs {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(prm.name).size(18.0));
-                        for (ci, ch) in def.choices.iter().enumerate() {
-                            if ui.selectable_label(c.p[0].round() as usize == ci, RichText::new(*ch).size(17.0)).clicked() {
-                                c.p[0] = ci as f32;
+                        ui.add_sized([300.0, 22.0], egui::Label::new(RichText::new(c.label()).size(16.0)).truncate());
+                        ui.spacing_mut().slider_width = w - 480.0;
+                        match c.kind {
+                            Kind::Float | Kind::Int => {
+                                let mut x = crate::vfx::get_f(v, c);
+                                let mut s = egui::Slider::new(&mut x, c.min..=c.max);
+                                if c.kind == Kind::Int {
+                                    s = s.step_by(1.0);
+                                }
+                                if ui.add(s).changed() {
+                                    v.insert(c.id.into(), Val::Num(x));
+                                    changed = true;
+                                }
+                            }
+                            Kind::Bool => {
+                                let mut b = crate::vfx::get_f(v, c) > 0.5;
+                                if ui.checkbox(&mut b, "").changed() {
+                                    v.insert(c.id.into(), Val::Num(if b { 1.0 } else { 0.0 }));
+                                    changed = true;
+                                }
+                            }
+                            Kind::Color => {
+                                let mut col = crate::vfx::get_color(v, c);
+                                let r = if c.alpha { ui.color_edit_button_rgba_unmultiplied(&mut col) } else {
+                                    let mut rgb = [col[0], col[1], col[2]];
+                                    let r = ui.color_edit_button_rgb(&mut rgb);
+                                    col = [rgb[0], rgb[1], rgb[2], 1.0];
+                                    r
+                                };
+                                if r.changed() {
+                                    v.insert(c.id.into(), Val::Text(crate::vfx::color_hex(col)));
+                                    changed = true;
+                                }
+                            }
+                            Kind::Text | Kind::Item => {
+                                let cur = crate::vfx::get_text(v, c);
+                                egui::ComboBox::from_id_salt(c.id).selected_text(if cur.is_empty() { tr("картинка не выбрана").to_string() } else { cur.clone() }).width(260.0).height(360.0).show_ui(ui, |ui| {
+                                    if ui.selectable_label(cur.is_empty(), tr("(нет)")).clicked() {
+                                        v.remove(c.id);
+                                        changed = true;
+                                    }
+                                    for n in &items {
+                                        if ui.selectable_label(&cur == n, n).clicked() {
+                                            v.insert(c.id.into(), Val::Text(n.clone()));
+                                            changed = true;
+                                        }
+                                    }
+                                });
+                                if ui.small_button("…").on_hover_text(tr("Выбрать файл")).clicked() {
+                                    if let Some(p) = rfd::FileDialog::new().add_filter("PNG/JPG", &["png", "jpg", "jpeg"]).pick_file() {
+                                        v.insert(c.id.into(), Val::Text(p.to_string_lossy().into_owned()));
+                                        changed = true;
+                                    }
+                                }
                             }
                         }
                     });
-                    continue;
                 }
-                ui.horizontal(|ui| {
-                    ui.add_sized([200.0, 22.0], egui::Label::new(RichText::new(prm.name).size(18.0)));
-                    ui.spacing_mut().slider_width = w - 380.0;
-                    ui.add(egui::Slider::new(&mut c.p[k], prm.min..=prm.max).step_by(prm.step as f64));
-                });
-            }
-            if def.color.is_some() {
-                ui.horizontal(|ui| {
-                    ui.add_sized([200.0, 22.0], egui::Label::new(RichText::new(tr("Цвет")).size(18.0)));
-                    ui.color_edit_button_rgba_unmultiplied(&mut c.color);
-                });
-            }
-            if def.image {
-                ui.horizontal(|ui| {
-                    if ui.button(RichText::new(tr("Выбрать картинку частицы…")).size(17.0)).clicked() {
-                        if let Some(p) = rfd::FileDialog::new().add_filter("Картинки", &["png", "jpg", "jpeg", "gif"]).pick_file() {
-                            c.image = p.to_string_lossy().into_owned();
-                        }
-                    }
-                    let n = std::path::Path::new(&c.image).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "картинка не выбрана".into());
-                    ui.label(n);
-                });
-            }
+            });
             ui.add_space(16.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let ok = egui::Button::new(RichText::new(tr("Готово")).size(17.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(14, 150, 240)).rounding(3.0);
@@ -1328,9 +1350,8 @@ fn vfx_edit_dialog(app: &mut App, ctx: &Context, idx: usize) {
                     back = true;
                 }
                 if ui.button(RichText::new(tr("Сбросить")).size(16.0)).clicked() {
-                    let on = c.on;
-                    *c = crate::vfx::default_cfg(def);
-                    c.on = on;
+                    crate::vfx::reset_effect(&mut app.settings.vfx, def);
+                    changed = true;
                 }
             });
         });
@@ -1340,6 +1361,10 @@ fn vfx_edit_dialog(app: &mut App, ctx: &Context, idx: usize) {
         p.circle_filled(cpos, 31.0, Color32::from_rgb(166, 214, 240));
         p.text(cpos, Align2::CENTER_CENTER, "!", FontId::proportional(46.0), Color32::WHITE);
     });
+    if changed {
+        // Manual changes unload the active preset (VTS).
+        app.vfx_preset.clear();
+    }
     if done || back {
         app.ui.modal = if back { Some(Modal::VfxList) } else { None };
         app.ui.modal_sel = None;
@@ -1526,8 +1551,9 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
         Modal::VfxList => {
             let mut v = vec![Row { bold: "🗑".into(), text: "Выключить все эффекты".into(), enabled: true }];
             v.extend(crate::vfx::DEFS.iter().enumerate().map(|(i, d)| {
-                let on = app.settings.vfx.get(i).map(|c| c.on).unwrap_or(false);
-                Row { bold: if on { "✔".into() } else { String::new() }, text: d.name.into(), enabled: true }
+                let on = crate::vfx::effect_active(&app.settings.vfx, d);
+                let _ = i;
+                Row { bold: if on { "✔".into() } else { String::new() }, text: d.name().into(), enabled: true }
             }));
             (
                 if app.settings.vfx_on { "Выберите эффект для настройки." } else { "Выберите эффект для настройки. Внимание!! Визуальные эффекты отключены, поэтому предпросмотр будет отсутствовать." },
@@ -1734,9 +1760,8 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
         Modal::Info(_) | Modal::VfxEdit(_) | Modal::HkAction(_) | Modal::HkFile(_) | Modal::HkGesture(..) | Modal::HkTwitch(_) | Modal::HkSound(_) | Modal::TwitchReward(_) | Modal::TwitchFeatures | Modal::TwitchDropper | Modal::TwitchChat | Modal::TwitchTriggersCfg => app.ui.modal = None,
         Modal::VfxList => {
             if i == 0 {
-                for c in &mut app.settings.vfx {
-                    c.on = false;
-                }
+                app.settings.vfx.clear();
+                app.vfx_preset.clear();
                 app.save();
             } else {
                 app.ui.modal = Some(Modal::VfxEdit(i - 1));
@@ -1746,13 +1771,13 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
             if let Some(name) = vfx_presets(app).get(i).cloned() {
                 let path = app.paths.data.join("vfx_presets").join(format!("{name}.json"));
                 if kind == Modal::VfxPresetLoad {
-                    match crate::formats::read_json::<Vec<crate::vfx::Cfg>>(&path) {
-                        Ok(mut v) => {
-                            crate::vfx::normalize(&mut v);
-                            app.settings.vfx = v;
+                    match crate::vfx::load_preset(&app.paths.data, &name) {
+                        Some(v) => {
+                            app.vfx_fade_to(v, 0.5);
+                            app.vfx_preset = name.clone();
                             app.toast(format!("Пресет «{name}» загружен"));
                         }
-                        Err(e) => app.toast(format!("Пресет: {e:#}")),
+                        None => app.toast(format!("Пресет «{name}» не удалось прочитать")),
                     }
                 } else {
                     let _ = std::fs::remove_file(&path);
@@ -2130,13 +2155,16 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
     });
 
     section(ui, tr("Визуальные эффекты (VFX)"), |ui| {
-        let n = app.settings.vfx.iter().filter(|c| c.on).count();
+        let n = crate::vfx::active_effects(&app.settings.vfx).len();
         ui.horizontal(|ui| {
             if ui.add(egui::Button::new(RichText::new("?").size(18.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(60, 60, 66)).rounding(14.0)).clicked() {
                 app.settings.dismissed_info.retain(|d| *d != INFO_VFX_ALPHA && *d != INFO_VFX_ARTISTS);
                 open_info(app, INFO_VFX_ALPHA, None);
             }
-            toggle(ui, &mut app.settings.vfx_on, tr("Активировать"));
+            if toggle(ui, &mut app.settings.vfx_on, tr("Активировать")).changed() {
+                let ev = serde_json::json!({ "currentOnState": app.settings.vfx_on, "currentPreset": app.vfx_preset });
+                app.api_events.push(("PostProcessingEvent".into(), ev));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let st = if app.settings.vfx_on && n > 0 { "Вкл." } else { "Выкл." };
                 ui.label(RichText::new(st).size(18.0).color(Color32::GRAY));
@@ -2170,6 +2198,10 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
                 let _ = std::process::Command::new("explorer").arg(&d).spawn();
             }
         });
+        toggle(ui, &mut app.settings.vfx_restricted, tr("Разрешить экспериментальные эффекты"));
+        if !app.vfx_preset.is_empty() {
+            ui.label(RichText::new(format!("{} {}", tr("Активный пресет:"), app.vfx_preset)).weak());
+        }
         if app.ui.vfx_save_open {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut app.ui.vfx_preset_name).hint_text(tr("Название пресета")).desired_width(300.0));
@@ -2177,8 +2209,9 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
                 if ui.add_enabled(!name.is_empty(), egui::Button::new(tr("Сохранить"))).clicked() {
                     let d = app.paths.data.join("vfx_presets");
                     let _ = std::fs::create_dir_all(&d);
-                    if let Ok(s) = serde_json::to_vec_pretty(&app.settings.vfx) {
-                        let _ = std::fs::write(d.join(format!("{name}.json")), s);
+                    let _ = d;
+                    if crate::vfx::save_preset(&app.paths.data, &name, &app.settings.vfx).is_ok() {
+                        app.vfx_preset = name.clone();
                         app.toast(format!("Пресет «{name}» сохранён"));
                     }
                     app.ui.vfx_save_open = false;

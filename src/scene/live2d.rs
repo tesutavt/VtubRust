@@ -149,6 +149,9 @@ pub struct Live2D {
     pub ignore_raycast: Vec<String>,
     /// Animation events of the last update: (type, time, data, animation file, length, idle).
     pub anim_events: Vec<(&'static str, f32, String, String, f32, bool)>,
+    /// ModelGlitch effect strengths (explode, wiggle, pulse).
+    pub glitch: [f32; 3],
+    glitched: bool,
     /// ArtMesh highlighted in the settings list.
     pub highlight: Option<usize>,
     /// Physics strength forced by a plugin (SetCurrentModelPhysics).
@@ -391,6 +394,8 @@ impl Live2D {
             mosaic: 0.0,
             vts_artmesh: vt.as_ref().and_then(|v| v.art_mesh_details.clone()),
             highlight: None,
+            glitch: [0.0; 3],
+            glitched: false,
             anim_events: Vec::new(),
             ignore_raycast: crate::artmesh::userdata_ignored(model3, m3.file_references.user_data.as_deref()),
             api_strength: None,
@@ -685,6 +690,49 @@ impl Live2D {
             }
         }
         self.first_upload = false;
+        if self.glitch.iter().any(|g| *g > 0.0) {
+            // VTS "Model glitch": parts fly apart, wiggle and pulse.
+            let t = self.time;
+            let c = self.model.canvas.size;
+            let ppu = self.model.canvas.pixels_per_unit.max(1e-3);
+            let span = (c.x.max(c.y) / ppu).max(0.1);
+            for (i, d) in m.drawables.iter().enumerate() {
+                let src = m.positions(i);
+                if src.is_empty() {
+                    continue;
+                }
+                let (mut cx, mut cy) = (0.0f32, 0.0f32);
+                for v in src {
+                    cx += v.x;
+                    cy += v.y;
+                }
+                let n = src.len() as f32;
+                let (cx, cy) = (cx / n, cy / n);
+                let h = ((i as f32 * 12.9898).sin() * 43758.547).fract();
+                let len = (cx * cx + cy * cy).sqrt().max(1e-4);
+                let ex = self.glitch[0] * span * 0.08 * (0.5 + h) * ((t * 2.0 + h * 6.0).sin() * 0.5 + 0.5);
+                let wx = self.glitch[1] * span * 0.01 * (t * 17.0 + h * 40.0).sin();
+                let wy = self.glitch[1] * span * 0.01 * (t * 13.0 + h * 30.0).cos();
+                let ps = 1.0 + self.glitch[2] * 0.15 * (t * 6.0 + h * 10.0).sin();
+                let dst = &mut self.pos_scratch[d.vertex_offset..d.vertex_offset + d.vertex_count];
+                for (o, v) in dst.iter_mut().zip(src) {
+                    *o = [cx + (v.x - cx) * ps + cx / len * ex + wx, cy + (v.y - cy) * ps + cy / len * ex + wy];
+                }
+            }
+            changed = true;
+            self.glitched = true;
+        } else if self.glitched {
+            // Restore the original positions once.
+            for (i, d) in m.drawables.iter().enumerate() {
+                let src = m.positions(i);
+                let dst = &mut self.pos_scratch[d.vertex_offset..d.vertex_offset + d.vertex_count];
+                for (o, v) in dst.iter_mut().zip(src) {
+                    *o = [v.x, v.y];
+                }
+            }
+            changed = true;
+            self.glitched = false;
+        }
         if changed {
             self.batch.set_positions(&gpu.queue, &self.pos_scratch);
         }

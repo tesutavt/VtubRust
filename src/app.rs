@@ -149,6 +149,12 @@ pub struct App {
     pub twitch_login: Option<std::sync::mpsc::Receiver<crate::twitch::Msg>>,
     pub fx: crate::twitch_fx::Fx,
     pub ui_dt: f32,
+    /// Microphone volume 0..1 (lipsync), also used by effects.
+    pub mic_level: f32,
+    /// Name of the loaded effect preset ("" = none).
+    pub vfx_preset: String,
+    /// Effect fade: (from, to, elapsed, duration).
+    vfx_fade: Option<(crate::vfx::Values, crate::vfx::Values, f32, f32)>,
     pub editor: Option<crate::cubism_editor::Editor>,
     pub mesh_select: Option<crate::api_events::MeshSelect>,
     /// Snapshot of the current model's config (hotkeys, other) to detect ModelConfigChangedEvent.
@@ -241,7 +247,6 @@ impl App {
         };
 
         let mut settings = settings;
-        crate::vfx::normalize(&mut settings.vfx);
         crate::i18n::set_language(&settings.language);
         let mut app = App {
             window,
@@ -313,6 +318,9 @@ impl App {
             twitch_login: None,
             fx: Default::default(),
             ui_dt: 0.0,
+            mic_level: 0.0,
+            vfx_preset: String::new(),
+            vfx_fade: None,
             editor: None,
             mesh_select: None,
             cfg_snapshot: (0, 0),
@@ -1035,6 +1043,27 @@ impl App {
         }
     }
 
+    /// Changes the effect values, fading over `secs` (0 = instantly).
+    pub fn vfx_fade_to(&mut self, to: crate::vfx::Values, secs: f32) {
+        if secs <= 0.0 {
+            self.settings.vfx = to;
+            self.vfx_fade = None;
+        } else {
+            self.vfx_fade = Some((self.settings.vfx.clone(), to, 0.0, secs));
+        }
+    }
+
+    fn update_vfx_fade(&mut self, dt: f32) {
+        if let Some((from, to, t, dur)) = self.vfx_fade.as_mut() {
+            *t += dt;
+            let k = (*t / *dur).min(1.0);
+            self.settings.vfx = if k >= 1.0 { to.clone() } else { crate::vfx::blend(from, to, k) };
+            if k >= 1.0 {
+                self.vfx_fade = None;
+            }
+        }
+    }
+
     pub fn set_editor(&mut self, on: bool) {
         self.settings.editor_on = on;
         self.editor = None;
@@ -1257,6 +1286,10 @@ impl App {
         crate::api::pump(self, dt);
         self.update_twitch();
         self.update_editor();
+        self.update_vfx_fade(dt);
+        if let Some(a) = self.avatar.as_mut() {
+            a.glitch = if self.settings.vfx_on { crate::vfx::model_glitch(&self.settings.vfx) } else { [0.0; 3] };
+        }
         let (vw, vh) = self.viewport();
         self.ui_dt = dt;
 
@@ -1337,16 +1370,19 @@ impl App {
             }
         }
 
-        // Active post-processing effects (DEFS order).
-        let active: Vec<(usize, crate::vfx::Cfg)> = if self.settings.vfx_on {
-            self.settings.vfx.iter().enumerate().filter(|(_, c)| c.on).map(|(i, c)| (i, c.clone())).collect()
-        } else {
-            Vec::new()
-        };
-        if !active.is_empty() && render {
+        // Active post-processing effects (VTS order). BackgroundShift runs in the compose pass,
+        // ModelGlitch deforms the model vertices.
+        let vfx_vals = if self.settings.vfx_on { self.settings.vfx.clone() } else { Default::default() };
+        let active = crate::vfx::active_effects(&vfx_vals);
+        let passes: Vec<usize> = active.iter().copied().filter(|&i| !matches!(crate::vfx::DEFS[i].id, "BackgroundShift" | "ModelGlitch")).collect();
+        let use_vfx = render && active.iter().any(|&i| crate::vfx::DEFS[i].id != "ModelGlitch");
+        if use_vfx {
+            let dirs: Vec<PathBuf> = self.settings.vts_assets().into_iter().map(|a| a.join("Items")).chain(std::iter::once(self.paths.data.join("Items"))).collect();
             let vfx = self.vfx.get_or_insert_with(|| crate::vfx::Renderer::new(&self.gpu));
-            if let Some((_, c)) = active.iter().find(|(i, _)| crate::vfx::DEFS[*i].image) {
-                vfx.set_aux(&self.gpu, &c.image);
+            for &e in &passes {
+                for t in crate::vfx::textures(&vfx_vals, &crate::vfx::DEFS[e]) {
+                    vfx.load_image(&self.gpu, &dirs, &t);
+                }
             }
             vfx.ensure(&self.gpu, 0, self.gpu.config.width, self.gpu.config.height);
             for (slot, out) in [(1usize, &self.spout), (2, &self.ndi), (3, &self.vcam)] {
@@ -1356,11 +1392,20 @@ impl App {
                 }
             }
         }
-        let refs: Vec<(usize, &crate::vfx::Cfg)> = active.iter().map(|(i, c)| (*i, c)).collect();
-        let vfx = self.vfx.as_ref().filter(|_| !refs.is_empty());
-        if let Some(v) = vfx {
-            v.upload(&self.gpu, &refs, self.time);
-        }
+        let vfx_inputs = {
+            let (wx, wy) = self.window.inner_position().map(|p| (p.x as f32, p.y as f32)).unwrap_or((0.0, 0.0));
+            let ws = self.window.inner_size();
+            let mu = [((self.mouse[0] - wx) / ws.width.max(1) as f32).clamp(0.0, 1.0), ((self.mouse[1] - wy) / ws.height.max(1) as f32).clamp(0.0, 1.0)];
+            crate::vfx::FrameInputs {
+                time: self.time,
+                dt,
+                mic: self.mic_level,
+                head: [self.inputs[crate::mapping::input::FACE_ANGLE_X] / 30.0, self.inputs[crate::mapping::input::FACE_ANGLE_Y] / 30.0],
+                mouse: [mu[0], mu[1], if crate::hotkeys::vk_down(0x01) && self.window.has_focus() { 1.0 } else { 0.0 }],
+            }
+        };
+        let clear_col = self.clear_color();
+        let mut vfx = if use_vfx { self.vfx.as_mut() } else { None };
         let gpu = &self.gpu;
         let frame = if render && !self.occluded {
             match gpu.surface.get_current_texture() {
@@ -1400,14 +1445,25 @@ impl App {
         let bg = self.bg_sprite.as_ref().map(|(_, s)| s);
         if let Some(f) = &frame {
             let view = f.texture.create_view(&Default::default());
-            {
-                let target = vfx.and_then(|v| v.scene_view(0)).unwrap_or(&view);
-                let mut p = Painter::new(gpu, &mut enc, target, &gpu.depth, self.clear_color());
-                draw_scene(&mut p, bg, &self.items, self.avatar.as_ref());
-                draw_calls = p.draw_calls;
-            }
-            if let Some(v) = vfx {
-                v.run(&mut enc, 0, &view, &refs);
+            match vfx.as_deref_mut() {
+                Some(v) => {
+                    // Model layer (transparent) and background layer, combined by the effects.
+                    {
+                        let mut p = Painter::new(gpu, &mut enc, v.scene_view(0).unwrap(), &gpu.depth, wgpu::Color::TRANSPARENT);
+                        draw_scene(&mut p, None, &self.items, self.avatar.as_ref());
+                        draw_calls = p.draw_calls;
+                    }
+                    {
+                        let mut p = Painter::new(gpu, &mut enc, v.bg_view(0).unwrap(), &gpu.depth, clear_col);
+                        draw_scene(&mut p, bg, &[], None);
+                    }
+                    v.run(gpu, &mut enc, 0, &view, &vfx_vals, &passes, vfx_inputs);
+                }
+                None => {
+                    let mut p = Painter::new(gpu, &mut enc, &view, &gpu.depth, clear_col);
+                    draw_scene(&mut p, bg, &self.items, self.avatar.as_ref());
+                    draw_calls = p.draw_calls;
+                }
             }
             self.egui_rend.update_buffers(&gpu.device, &gpu.queue, &mut enc, &jobs, &sd);
             let pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1426,17 +1482,26 @@ impl App {
 
         // Video outputs (Spout2 / NDI): avatar + items on a transparent background, no UI.
         if render {
-            let clear = self.clear_color();
+            let clear = clear_col;
             for (slot, out) in [(1usize, &mut self.spout), (2, &mut self.ndi), (3, &mut self.vcam)] {
                 let Some(out) = out else { continue };
-                {
-                    let target = vfx.and_then(|v| v.scene_view(slot)).unwrap_or(&out.offscreen.scene_view);
-                    let (bgx, cc) = if out.with_bg { (bg, clear) } else { (None, wgpu::Color::TRANSPARENT) };
-                    let mut p = Painter::new(gpu, &mut enc, target, &out.offscreen.depth, cc);
-                    draw_scene(&mut p, bgx, &self.items, self.avatar.as_ref());
-                }
-                if let Some(v) = vfx {
-                    v.run(&mut enc, slot, &out.offscreen.scene_view, &refs);
+                let (bgx, cc) = if out.with_bg { (bg, clear) } else { (None, wgpu::Color::TRANSPARENT) };
+                match vfx.as_deref_mut() {
+                    Some(v) if v.scene_view(slot).is_some() => {
+                        {
+                            let mut p = Painter::new(gpu, &mut enc, v.scene_view(slot).unwrap(), &out.offscreen.depth, wgpu::Color::TRANSPARENT);
+                            draw_scene(&mut p, None, &self.items, self.avatar.as_ref());
+                        }
+                        {
+                            let mut p = Painter::new(gpu, &mut enc, v.bg_view(slot).unwrap(), &out.offscreen.depth, cc);
+                            draw_scene(&mut p, bgx, &[], None);
+                        }
+                        v.run(gpu, &mut enc, slot, &out.offscreen.scene_view, &vfx_vals, &passes, vfx_inputs);
+                    }
+                    _ => {
+                        let mut p = Painter::new(gpu, &mut enc, &out.offscreen.scene_view, &out.offscreen.depth, cc);
+                        draw_scene(&mut p, bgx, &self.items, self.avatar.as_ref());
+                    }
                 }
                 // Twitch Emote Dropper / flying chat on top of the scene, mapped like the model
                 // (window points → output pixels, same stretch as the scene itself).

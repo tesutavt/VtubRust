@@ -716,7 +716,7 @@ fn handle_message(app: &mut App, srv: &mut ApiServer, sid: u64, text: &str) -> O
                 Some(k) => item_sort(app, k, id, &data),
             }
         }
-        "PostProcessingListRequest" => Ok(post_processing_list(app, &data)),
+        "PostProcessingListRequest" => post_processing_list(app, &data),
         "PostProcessingUpdateRequest" => post_processing_update(app, &data),
         "ArtMeshSelectionRequest" => {
             let active: Vec<String> = data["activeArtMeshes"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
@@ -1555,70 +1555,141 @@ fn item_pin(app: &mut App, d: &Value) -> Res {
     Ok(json!({ "isPinned": ok, "itemInstanceID": iid, "itemFileName": item_file_name(&app.items[k].source) }))
 }
 
-fn post_processing_list(app: &App, d: &Value) -> Value {
+fn post_processing_list(app: &App, d: &Value) -> Res {
+    use crate::vfx::{Kind, DEFS};
     let filter: Vec<String> = d["effectIDFilter"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    if filter.len() > 512 {
+        return err(1150, "Filter array too long.");
+    }
+    let want: Vec<usize> = filter.iter().filter_map(|f| crate::vfx::find_effect(f)).collect();
+    let vals = &app.settings.vfx;
+    let picked: Vec<usize> = (0..DEFS.len()).filter(|i| filter.is_empty() || want.contains(i)).collect();
     let effects: Vec<Value> = if d["fillPostProcessingEffectsArray"].as_bool().unwrap_or(false) {
-        crate::vfx::DEFS
+        picked
             .iter()
-            .enumerate()
-            .filter(|(_, def)| filter.is_empty() || filter.iter().any(|f| f == def.id))
-            .map(|(i, def)| {
-                let c = &app.settings.vfx[i];
-                let mut cfg: Vec<Value> = vec![json!({
-                    "internalID": format!("{}_on", def.id), "enumID": format!("{}_on", def.id), "explanation": "Activate", "type": "Bool", "activationConfig": true,
-                    "boolValue": c.on, "boolDefault": false,
-                })];
-                for (k, p) in def.params.iter().enumerate() {
-                    cfg.push(json!({
-                        "internalID": format!("{}_{}", def.id, k), "enumID": format!("{}_{}", def.id, k), "explanation": p.name, "type": "Float", "activationConfig": false,
-                        "floatValue": c.p.get(k).copied().unwrap_or(p.def), "floatMin": p.min, "floatMax": p.max, "floatDefault": p.def,
-                    }));
-                }
-                json!({ "internalID": def.id, "enumID": def.id, "explanation": def.name, "effectIsActive": c.on, "effectIsRestricted": def.distorts, "configEntries": cfg })
+            .map(|&i| {
+                let def = &DEFS[i];
+                let cfg: Vec<Value> = def
+                    .configs
+                    .iter()
+                    .map(|c| {
+                        let f = crate::vfx::get_f(vals, c);
+                        let (ty, is) = match c.kind {
+                            Kind::Float => ("Float", 0),
+                            Kind::Int => ("Int", 1),
+                            Kind::Bool => ("Bool", 2),
+                            Kind::Color => ("Color", 3),
+                            Kind::Text => ("String", 4),
+                            Kind::Item => ("SceneItem", 5),
+                        };
+                        let col = if is == 3 { crate::vfx::color_hex(crate::vfx::get_color(vals, c)) } else { String::new() };
+                        let col_def = if is == 3 { format!("{}FF", c.color) } else { String::new() };
+                        let txt = if is >= 4 { crate::vfx::get_text(vals, c) } else { String::new() };
+                        json!({
+                            "internalID": c.internal, "enumID": c.id, "explanation": c.en, "type": ty, "activationConfig": c.active,
+                            "floatValue": if is == 0 { f } else { 0.0 }, "floatMin": if is == 0 { c.min } else { 0.0 }, "floatMax": if is == 0 { c.max } else { 0.0 }, "floatDefault": if is == 0 { c.default } else { 0.0 },
+                            "intValue": if is == 1 { f as i64 } else { 0 }, "intMin": if is == 1 { c.min as i64 } else { 0 }, "intMax": if is == 1 { c.max as i64 } else { 0 }, "intDefault": if is == 1 { c.default as i64 } else { 0 },
+                            "colorValue": col, "colorDefault": col_def, "colorHasAlpha": c.alpha,
+                            "boolValue": is == 2 && f > 0.5, "boolDefault": is == 2 && c.default > 0.5,
+                            "stringValue": if is == 4 { txt.clone() } else { String::new() }, "stringDefault": "",
+                            "sceneItemValue": if is == 5 { txt } else { String::new() }, "sceneItemDefault": "",
+                        })
+                    })
+                    .collect();
+                json!({ "internalID": def.internal, "enumID": def.id, "explanation": def.name_en, "effectIsActive": crate::vfx::effect_active(vals, def), "effectIsRestricted": def.restricted, "configEntries": cfg })
             })
             .collect()
     } else {
         Vec::new()
     };
-    let active = app.settings.vfx.iter().filter(|c| c.on).count();
-    json!({
-        "postProcessingSupported": true, "postProcessingActive": app.settings.vfx_on, "canSendPostProcessingUpdateRequestRightNow": true,
-        "restrictedEffectsAllowed": true, "presetIsActive": false, "activePreset": "", "presetCount": 0, "activeEffectCount": active,
-        "effectCountBeforeFilter": crate::vfx::DEFS.len(), "configCountBeforeFilter": 0, "effectCountAfterFilter": effects.len(), "configCountAfterFilter": 0,
-        "postProcessingEffects": effects, "postProcessingPresets": [],
-    })
+    let presets: Vec<String> = if d["fillPostProcessingPresetsArray"].as_bool().unwrap_or(false) { crate::vfx::list_presets(&app.paths.data) } else { Vec::new() };
+    let active = crate::vfx::active_effects(vals).len();
+    let total_cfg: usize = DEFS.iter().map(|d| d.configs.len()).sum();
+    let after_cfg: usize = picked.iter().map(|&i| DEFS[i].configs.len()).sum();
+    Ok(json!({
+        "postProcessingSupported": true, "postProcessingActive": app.settings.vfx_on, "canSendPostProcessingUpdateRequestRightNow": !vfx_window_open(app),
+        "restrictedEffectsAllowed": app.settings.vfx_restricted, "presetIsActive": !app.vfx_preset.is_empty(), "activePreset": app.vfx_preset,
+        "presetCount": presets.len(), "activeEffectCount": active,
+        "effectCountBeforeFilter": DEFS.len(), "configCountBeforeFilter": total_cfg, "effectCountAfterFilter": picked.len(), "configCountAfterFilter": after_cfg,
+        "postProcessingEffects": effects, "postProcessingPresets": presets,
+    }))
+}
+
+fn vfx_window_open(app: &App) -> bool {
+    matches!(app.ui.modal, Some(crate::ui::Modal::VfxEdit(_)) | Some(crate::ui::Modal::VfxList))
 }
 
 fn post_processing_update(app: &mut App, d: &Value) -> Res {
+    use crate::vfx::DEFS;
+    if vfx_window_open(app) {
+        return err(1200, "Cannot update post-processing while the effect windows are open.");
+    }
+    let fade = d["postProcessingFadeTime"].as_f64().unwrap_or(0.0);
+    if !(0.0..=2.0).contains(&fade) {
+        return err(1201, "Fade time must be between 0 and 2 seconds.");
+    }
+    let set_preset = d["setPostProcessingPreset"].as_bool().unwrap_or(false);
+    let set_values = d["setPostProcessingValues"].as_bool().unwrap_or(false);
+    let restricted_ok = d["usingRestrictedEffects"].as_bool().unwrap_or(false) && app.settings.vfx_restricted;
+    let mut target = app.settings.vfx.clone();
+    let mut preset_name = app.vfx_preset.clone();
+    if d["randomizeAll"].as_bool().unwrap_or(false) {
+        let chaos = d["randomizeAllChaosLevel"].as_f64().unwrap_or(0.4).clamp(0.0, 1.0) as f32;
+        target = crate::vfx::randomize(chaos, restricted_ok);
+        preset_name.clear();
+    } else if set_preset && set_values {
+        return err(1202, "Cannot load a preset and individual values in one request.");
+    } else if set_preset {
+        let name = d["presetToSet"].as_str().unwrap_or("");
+        match crate::vfx::load_preset(&app.paths.data, name) {
+            Some(mut v) => {
+                if !app.settings.vfx_restricted {
+                    for def in DEFS.iter().filter(|d| d.restricted) {
+                        crate::vfx::reset_effect(&mut v, def);
+                    }
+                }
+                target = v;
+                preset_name = name.to_string();
+            }
+            None => return err(1203, format!("Preset \"{name}\" could not be loaded.")),
+        }
+    } else if set_values {
+        let list = d["postProcessingValues"].as_array().cloned().unwrap_or_default();
+        let mut seen = std::collections::HashSet::new();
+        let mut parsed = Vec::new();
+        for v in &list {
+            let id = v["configID"].as_str().unwrap_or("");
+            let val = match &v["configValue"] {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            let Some((e, c)) = crate::vfx::find_config(id) else { return err(1204, format!("Unknown configID {id}.")) };
+            if !seen.insert((e, c)) {
+                return err(1205, "The value list contains duplicates.");
+            }
+            if DEFS[e].restricted && !restricted_ok {
+                return err(1206, "Restricted effects are not allowed (set usingRestrictedEffects and allow them in the VFX settings).");
+            }
+            parsed.push((e, c, val));
+        }
+        if d["setAllOtherValuesToDefault"].as_bool().unwrap_or(false) {
+            target.clear();
+        }
+        for (e, c, val) in parsed {
+            if !crate::vfx::set_from_str(&mut target, &DEFS[e].configs[c], &val) {
+                return err(1204, format!("Invalid value for {}.", DEFS[e].configs[c].id));
+            }
+        }
+        preset_name.clear();
+    }
     if let Some(on) = d["postProcessingOn"].as_bool() {
         app.settings.vfx_on = on;
     }
-    if d["setPostProcessingValues"].as_bool() == Some(true) {
-        if d["setAllOtherValuesToDefault"].as_bool() == Some(true) {
-            for (i, def) in crate::vfx::DEFS.iter().enumerate() {
-                app.settings.vfx[i] = crate::vfx::default_cfg(def);
-            }
-        }
-        let vals = d["postProcessingValues"].as_array().cloned().unwrap_or_default();
-        for v in vals {
-            let id = v["configID"].as_str().unwrap_or("");
-            let val = v["configValue"].as_str().unwrap_or("");
-            let Some((eff, key)) = id.rsplit_once('_') else { return err(1204, format!("Unknown configID {id}.")) };
-            let Some(i) = crate::vfx::DEFS.iter().position(|d| d.id == eff) else { return err(1204, format!("Unknown effect {eff}.")) };
-            if key == "on" {
-                app.settings.vfx[i].on = val.eq_ignore_ascii_case("true");
-            } else if let (Ok(k), Ok(f)) = (key.parse::<usize>(), val.parse::<f32>()) {
-                if let Some(slot) = app.settings.vfx[i].p.get_mut(k) {
-                    *slot = f;
-                }
-            } else {
-                return err(1204, format!("Invalid value for {id}."));
-            }
-        }
-    }
-    let active = app.settings.vfx.iter().filter(|c| c.on).count();
-    app.api_events.push(("PostProcessingEvent".into(), json!({ "currentOnState": app.settings.vfx_on, "currentPreset": "" })));
-    Ok(json!({ "postProcessingActive": app.settings.vfx_on, "presetIsActive": false, "activePreset": "", "activeEffectCount": active }))
+    app.vfx_fade_to(target, fade as f32);
+    app.vfx_preset = if app.settings.vfx_on { preset_name } else { String::new() };
+    let active = crate::vfx::active_effects(&app.settings.vfx).len();
+    app.api_events.push(("PostProcessingEvent".into(), json!({ "currentOnState": app.settings.vfx_on, "currentPreset": app.vfx_preset })));
+    Ok(json!({ "postProcessingActive": app.settings.vfx_on, "presetIsActive": !app.vfx_preset.is_empty(), "activePreset": app.vfx_preset, "activeEffectCount": active }))
 }
 
 /// Model click → ModelClickedEvent (+ ItemEvent "Clicked" for items).

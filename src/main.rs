@@ -26,6 +26,7 @@ mod record;
 mod tobii;
 mod lighting;
 mod vfx;
+mod vfx_schema;
 mod vcam;
 mod demo;
 mod scene;

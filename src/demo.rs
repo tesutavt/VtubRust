@@ -17,16 +17,31 @@ impl Demo {
 }
 
 fn set_fx(app: &mut App, on: &[&str]) {
-    for c in &mut app.settings.vfx {
-        c.on = on.contains(&c.id.as_str());
+    // Old demo names → VTS effect configs.
+    let mut v = crate::vfx::Values::new();
+    let set = |v: &mut crate::vfx::Values, id: &str, val: &str| {
+        if let Some((e, c)) = crate::vfx::find_config(id) {
+            crate::vfx::set_from_str(v, &crate::vfx::DEFS[e].configs[c], val);
+        }
+    };
+    for name in on {
+        match *name {
+            "weather" => set(&mut v, "WeatherEffects_SnowStrength", "0.6"),
+            "rim" => set(&mut v, "Backlight_Strength", "1"),
+            "glow" => set(&mut v, "Bloom_Strength", "0.6"),
+            "color" => {
+                set(&mut v, "ColorGrading_Strength", "1");
+                set(&mut v, "ColorGrading_Saturation", "25");
+                set(&mut v, "ColorGrading_WhitebalanceTemperature", "45");
+            }
+            "ascii" => set(&mut v, "Ascii_Strength", "1"),
+            "cinema" => set(&mut v, "Letterbox_Strength", "1"),
+            "falling" => set(&mut v, "CustomParticles_Strength", "1"),
+            other => set(&mut v, &format!("{other}_Strength"), "1"),
+        }
     }
+    app.settings.vfx = v;
     app.settings.vfx_on = !on.is_empty();
-    if let Some(c) = app.settings.vfx.iter_mut().find(|c| c.id == "weather") {
-        c.p[0] = 1.0; // snow
-    }
-    if let Some(c) = app.settings.vfx.iter_mut().find(|c| c.id == "color") {
-        c.p = vec![0.03, 1.1, 1.25, 0.0, 0.45, 1.0];
-    }
 }
 
 /// Advances the demo; returns false when it is over.

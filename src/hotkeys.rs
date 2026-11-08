@@ -481,12 +481,12 @@ fn vk_of(name: &str) -> Option<u16> {
 }
 
 #[cfg(windows)]
-fn vk_down(vk: u16) -> bool {
+pub fn vk_down(vk: u16) -> bool {
     unsafe { (windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
 }
 
 #[cfg(not(windows))]
-fn vk_down(_vk: u16) -> bool {
+pub fn vk_down(_vk: u16) -> bool {
     false
 }
 
@@ -502,7 +502,7 @@ pub enum Undo {
     /// Unload the item scene.
     Scene(String),
     /// Restore the previous effect values.
-    Effects(Vec<crate::vfx::Cfg>, bool),
+    Effects(crate::vfx::Values, bool, String),
     /// Turn the Twitch feature off again.
     Feature(String),
     /// Load the previous model again.
@@ -523,7 +523,7 @@ fn capture_undo(app: &App, h: &Hotkey) -> Option<Undo> {
         "ToggleExpression" => Undo::Expression(h.file.clone()),
         "MoveModel" => Undo::Move(app.avatar.as_ref()?.xf),
         "ToggleItemScene" => Undo::Scene(h.file.trim_end_matches(".json").to_string()),
-        "LoadEffectPreset" => Undo::Effects(app.settings.vfx.clone(), app.settings.vfx_on),
+        "LoadEffectPreset" => Undo::Effects(app.settings.vfx.clone(), app.settings.vfx_on, app.vfx_preset.clone()),
         "ToggleTwitchFeature" => Undo::Feature(h.file.clone()),
         "ChangeVTSModel" => {
             let a = app.avatar.as_ref()?;
@@ -549,9 +549,10 @@ pub fn run_reset(app: &mut App, r: &Reset) {
             }
         }
         Undo::Scene(name) => app.unload_scene(name, 0.3),
-        Undo::Effects(cfg, on) => {
-            app.settings.vfx = cfg.clone();
+        Undo::Effects(cfg, on, preset) => {
+            app.vfx_fade_to(cfg.clone(), 0.5);
             app.settings.vfx_on = *on;
+            app.vfx_preset = preset.clone();
         }
         Undo::Feature(f) => {
             let t = &mut app.settings.twitch;
@@ -989,14 +990,22 @@ pub fn trigger(app: &mut App, id_or_name: &str, src: Source) -> bool {
         "LoadEffectPreset" => {
             if h.file.is_empty() {
                 app.settings.vfx_on = !app.settings.vfx_on;
+            } else if app.vfx_preset == h.file && app.settings.vfx_on {
+                // Same preset again: unload it (VTS toggles presets).
+                app.vfx_fade_to(Default::default(), h.fade_seconds_amount.clamp(0.0, 2.0));
+                app.vfx_preset.clear();
             } else {
-                let path = app.paths.data.join("vfx_presets").join(format!("{}.json", h.file));
-                if let Ok(mut v) = crate::formats::read_json::<Vec<crate::vfx::Cfg>>(&path) {
-                    crate::vfx::normalize(&mut v);
-                    app.settings.vfx = v;
-                    app.settings.vfx_on = true;
+                match crate::vfx::load_preset(&app.paths.data, &h.file) {
+                    Some(v) => {
+                        app.vfx_fade_to(v, h.fade_seconds_amount.clamp(0.0, 2.0));
+                        app.settings.vfx_on = true;
+                        app.vfx_preset = h.file.clone();
+                    }
+                    None => app.toast(format!("Пресет эффектов «{}» не найден", h.file)),
                 }
             }
+            let ev = serde_json::json!({ "currentOnState": app.settings.vfx_on, "currentPreset": app.vfx_preset });
+            app.api_events.push(("PostProcessingEvent".into(), ev));
         }
         "ExecuteItemAction" => {
             // File = "<item folder name>::<hotkey name>" (VTS triggers it in every loaded instance).

@@ -193,7 +193,11 @@ pub struct Settings {
     pub vcam_on: bool,
     pub vcam_mirror: bool,
     pub vfx_on: bool,
-    pub vfx: Vec<crate::vfx::Cfg>,
+    /// User allowed restricted/experimental effects (VTS "restricted effects").
+    pub vfx_restricted: bool,
+    /// VTS effect values by config enum ID (VTS EffectConfigs). Old-format "vfx" data is ignored.
+    #[serde(rename = "vfx_vts")]
+    pub vfx: crate::vfx::Values,
     pub smooth_masks: bool,
     pub mask_atlas: u32,
     pub mask_max: u32,
@@ -306,7 +310,8 @@ impl Default for Settings {
             vcam_on: false,
             vcam_mirror: false,
             vfx_on: false,
-            vfx: Vec::new(),
+            vfx_restricted: false,
+            vfx: Default::default(),
             smooth_masks: false,
             mask_atlas: 2048,
             mask_max: 256,
