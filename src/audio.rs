@@ -20,13 +20,15 @@ pub struct SoundCfg {
     pub vban_ip: String,
     pub vban_port: u16,
     pub vban_stream: String,
-    /// Global volume 0..100.
+    /// Volume of the local playback 0..100.
     pub volume: f32,
+    /// Volume of the OBS (VBAN) output 0..100.
+    pub volume_obs: f32,
 }
 
 impl Default for SoundCfg {
     fn default() -> Self {
-        SoundCfg { play_local: true, vban: false, vban_ip: "127.0.0.1".into(), vban_port: 6980, vban_stream: "rigrs".into(), volume: 80.0 }
+        SoundCfg { play_local: true, vban: false, vban_ip: "127.0.0.1".into(), vban_port: 6980, vban_stream: "rigrs".into(), volume: 70.0, volume_obs: 70.0 }
     }
 }
 
@@ -53,6 +55,7 @@ pub struct Play {
 }
 
 enum Cmd {
+    StopAll,
     Play(Play),
     Stop(String, f32),
     Cfg(SoundCfg),
@@ -72,8 +75,9 @@ struct Voice {
 pub struct Audio {
     tx: Sender<Cmd>,
     stop: Arc<AtomicBool>,
-    /// Peak level of the last mixed block (0..1) for the VU meter (f32 bits).
+    /// Peak levels (local, OBS) of the last mixed blocks (0..1) for the VU meters (f32 bits).
     peak: Arc<AtomicU32>,
+    peak_obs: Arc<AtomicU32>,
     error: Arc<Mutex<Option<String>>>,
 }
 
@@ -82,19 +86,20 @@ impl Audio {
         let (tx, rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let peak = Arc::new(AtomicU32::new(0));
+        let peak_obs = Arc::new(AtomicU32::new(0));
         let error = Arc::new(Mutex::new(None));
         {
-            let (stop, peak, error, cfg) = (stop.clone(), peak.clone(), error.clone(), cfg.clone());
+            let (stop, peak, peak_obs, error, cfg) = (stop.clone(), peak.clone(), peak_obs.clone(), error.clone(), cfg.clone());
             std::thread::Builder::new()
                 .name("audio".into())
                 .spawn(move || {
-                    if let Err(e) = mixer(rx, cfg, stop, peak) {
+                    if let Err(e) = mixer(rx, cfg, stop, peak, peak_obs) {
                         *error.lock().unwrap() = Some(format!("{e:#}"));
                     }
                 })
                 .ok();
         }
-        Audio { tx, stop, peak, error }
+        Audio { tx, stop, peak, peak_obs, error }
     }
 
     pub fn play(&self, p: Play) {
@@ -112,6 +117,15 @@ impl Audio {
 
     pub fn peak(&self) -> f32 {
         f32::from_bits(self.peak.load(Ordering::Relaxed))
+    }
+
+    pub fn peak_obs(&self) -> f32 {
+        f32::from_bits(self.peak_obs.load(Ordering::Relaxed))
+    }
+
+    /// "Stop Sounds": stops everything immediately.
+    pub fn stop_all(&self) {
+        let _ = self.tx.send(Cmd::StopAll);
     }
 
     pub fn error(&self) -> Option<String> {
@@ -191,7 +205,7 @@ fn vban_packet(stream: &str, frame: u32, samples: &[f32]) -> Vec<u8> {
 }
 
 #[cfg(windows)]
-fn mixer(rx: Receiver<Cmd>, mut cfg: SoundCfg, stop: Arc<AtomicBool>, peak: Arc<AtomicU32>) -> anyhow::Result<()> {
+fn mixer(rx: Receiver<Cmd>, mut cfg: SoundCfg, stop: Arc<AtomicBool>, peak: Arc<AtomicU32>, peak_obs: Arc<AtomicU32>) -> anyhow::Result<()> {
     use windows::Win32::Media::Audio::*;
     use windows::Win32::System::Com::*;
     let mut cache: HashMap<PathBuf, Option<Arc<Clip>>> = HashMap::new();
@@ -215,6 +229,7 @@ fn mixer(rx: Receiver<Cmd>, mut cfg: SoundCfg, stop: Arc<AtomicBool>, peak: Arc<
             while let Ok(c) = rx.try_recv() {
                 match c {
                     Cmd::Cfg(c) => cfg = c,
+                    Cmd::StopAll => voices.clear(),
                     Cmd::Stop(g, fade) => {
                         for v in voices.iter_mut().filter(|v| v.group == g) {
                             v.fade = Some((1.0, 1.0 / (fade.max(0.01) * out_rate)));
@@ -251,6 +266,7 @@ fn mixer(rx: Receiver<Cmd>, mut cfg: SoundCfg, stop: Arc<AtomicBool>, peak: Arc<
                 continue;
             }
             let master = (cfg.volume / 100.0).clamp(0.0, 1.0);
+            let master_obs = (cfg.volume_obs / 100.0).clamp(0.0, 1.0);
             let mut mix = vec![0.0f32; n * 2];
             for v in voices.iter_mut() {
                 for i in 0..n {
@@ -282,13 +298,17 @@ fn mixer(rx: Receiver<Cmd>, mut cfg: SoundCfg, stop: Arc<AtomicBool>, peak: Arc<
                 }
             }
             voices.retain(|v| v.pos != f64::MAX);
+            let obs: Vec<f32> = mix.iter().map(|s| (s * master_obs).clamp(-1.0, 1.0)).collect();
             let mut pk = 0.0f32;
             for s in mix.iter_mut() {
                 *s = (*s * master).clamp(-1.0, 1.0);
                 pk = pk.max(s.abs());
             }
+            let pk_obs = obs.iter().fold(0.0f32, |a, b| a.max(b.abs()));
             let prev = f32::from_bits(peak.load(Ordering::Relaxed));
-            peak.store((pk.max(prev * 0.9)).to_bits(), Ordering::Relaxed);
+            peak.store((if cfg.play_local { pk } else { 0.0 }).max(prev * 0.9).to_bits(), Ordering::Relaxed);
+            let prev = f32::from_bits(peak_obs.load(Ordering::Relaxed));
+            peak_obs.store((if cfg.vban { pk_obs } else { 0.0 }).max(prev * 0.9).to_bits(), Ordering::Relaxed);
             let p = render.GetBuffer(n as u32)?;
             let out = p as *mut f32;
             for i in 0..n {
@@ -304,8 +324,8 @@ fn mixer(rx: Receiver<Cmd>, mut cfg: SoundCfg, stop: Arc<AtomicBool>, peak: Arc<
                     let frames = (n as f32 / ratio) as usize;
                     for k in 0..frames {
                         let src = ((k as f32 * ratio) as usize).min(n - 1);
-                        vban_buf.push(mix[src * 2]);
-                        vban_buf.push(mix[src * 2 + 1]);
+                        vban_buf.push(obs[src * 2]);
+                        vban_buf.push(obs[src * 2 + 1]);
                     }
                     while vban_buf.len() >= 512 {
                         let chunk: Vec<f32> = vban_buf.drain(..512).collect();
@@ -324,7 +344,7 @@ fn mixer(rx: Receiver<Cmd>, mut cfg: SoundCfg, stop: Arc<AtomicBool>, peak: Arc<
 }
 
 #[cfg(not(windows))]
-fn mixer(_rx: Receiver<Cmd>, _cfg: SoundCfg, _stop: Arc<AtomicBool>, _peak: Arc<AtomicU32>) -> anyhow::Result<()> {
+fn mixer(_rx: Receiver<Cmd>, _cfg: SoundCfg, _stop: Arc<AtomicBool>, _peak: Arc<AtomicU32>, _peak_obs: Arc<AtomicU32>) -> anyhow::Result<()> {
     anyhow::bail!("audio output is Windows-only")
 }
 
@@ -480,7 +500,7 @@ mod live_tests {
         }
         let p = std::env::temp_dir().join(format!("rigrs_beep_{}.wav", std::process::id()));
         std::fs::write(&p, &w).unwrap();
-        let cfg = SoundCfg { play_local: false, vban: true, vban_ip: "127.0.0.1".into(), vban_port: port, vban_stream: "rigrs".into(), volume: 100.0 };
+        let cfg = SoundCfg { play_local: false, vban: true, vban_ip: "127.0.0.1".into(), vban_port: port, vban_stream: "rigrs".into(), volume: 100.0, volume_obs: 100.0 };
         let a = Audio::start(&cfg);
         a.play(Play { file: p.clone(), volume: 1.0, pitch: 1.0, pan: 0.0, delay: 0.0, echo_count: 0, echo_delay: 0.2, echo_volume: 0.5, group: "t".into() });
         let mut buf = [0u8; 2048];

@@ -58,6 +58,10 @@ pub struct ItemCfg {
     pub default_unpinned: bool,
     /// Live2D items: the item's own keyboard hotkeys work.
     pub normal_hotkeys: bool,
+    pub remember_expressions: bool,
+    pub active_expressions: Vec<String>,
+    /// Visualization: tint the model layers in front of / behind the item.
+    pub colorize: bool,
 }
 
 impl Default for ItemCfg {
@@ -77,6 +81,9 @@ impl Default for ItemCfg {
             angle_mult: [1.0; 3],
             default_unpinned: true,
             normal_hotkeys: false,
+            remember_expressions: false,
+            active_expressions: Vec::new(),
+            colorize: false,
         }
     }
 }

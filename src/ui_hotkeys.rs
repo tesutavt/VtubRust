@@ -511,7 +511,7 @@ pub fn modal_choose(app: &mut App, kind: Modal, i: usize) -> bool {
 
 // ------------------------------------------------------------------ custom dialogs
 
-fn dim(ctx: &Context, id: &str) {
+pub(crate) fn dim(ctx: &Context, id: &str) {
     let screen = ctx.screen_rect();
     egui::Area::new(egui::Id::new(id)).fixed_pos(Pos2::ZERO).order(egui::Order::Foreground).show(ctx, |ui| {
         let (r, _) = ui.allocate_exact_size(screen.size(), Sense::click_and_drag());
@@ -520,7 +520,7 @@ fn dim(ctx: &Context, id: &str) {
 }
 
 /// Pink VTS-style option row: switch + title + subtitle. Returns true when changed.
-fn pink_row(ui: &mut egui::Ui, on: &mut bool, title: &str, sub: &str) -> bool {
+pub(crate) fn pink_row(ui: &mut egui::Ui, on: &mut bool, title: &str, sub: &str) -> bool {
     let w = ui.available_width();
     let fill = if *on { Color32::from_rgb(214, 234, 252) } else { Color32::from_rgb(255, 222, 228) };
     let stroke = if *on { Color32::from_rgb(120, 180, 240) } else { Color32::from_rgb(240, 150, 166) };
@@ -552,7 +552,7 @@ fn pink_row(ui: &mut egui::Ui, on: &mut bool, title: &str, sub: &str) -> bool {
     changed
 }
 
-fn group_title(ui: &mut egui::Ui, t: &str) {
+pub(crate) fn group_title(ui: &mut egui::Ui, t: &str) {
     ui.add_space(10.0);
     ui.label(RichText::new(tr(t)).size(17.0).color(Color32::from_rgb(110, 110, 118)));
     let r = ui.available_rect_before_wrap();
@@ -593,7 +593,7 @@ pub fn custom_modal(app: &mut App, ctx: &Context, kind: Modal) -> bool {
     true
 }
 
-fn dialog_frame(ctx: &Context, id: &str, width: f32, add: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn dialog_frame(ctx: &Context, id: &str, width: f32, add: impl FnOnce(&mut egui::Ui)) {
     let screen = ctx.screen_rect();
     let w = width.min(screen.width() - 40.0);
     egui::Area::new(egui::Id::new(id)).order(egui::Order::Tooltip).anchor(Align2::CENTER_CENTER, [0.0, 10.0]).show(ctx, |ui| {
@@ -911,45 +911,10 @@ fn sound_dialog(app: &mut App, ctx: &Context, i: usize) {
     }
 }
 
-/// General tab: sound output (VTS "Sound effects" card).
-pub fn sound_card(app: &mut App, ui: &mut egui::Ui) {
-    section(ui, "Звуковые эффекты", |ui| {
-        let s = &mut app.settings.sound;
-        toggle(ui, &mut s.play_local, tr("Воспроизводить в приложении"));
-        toggle(ui, &mut s.vban, tr("Отправлять в OBS (VBAN)"));
-        ui.horizontal(|ui| {
-            ui.label(tr("Громкость"));
-            ui.add(egui::Slider::new(&mut s.volume, 0.0..=100.0).suffix("%"));
-        });
-        if s.vban {
-            ui.horizontal(|ui| {
-                ui.label("IP");
-                ui.add(egui::TextEdit::singleline(&mut s.vban_ip).desired_width(120.0));
-                ui.label(tr("Порт"));
-                let mut p = s.vban_port as f32;
-                if ui.add(egui::DragValue::new(&mut p).range(1.0..=65535.0)).changed() {
-                    s.vban_port = p as u16;
-                }
-                ui.label(tr("Имя потока"));
-                ui.add(egui::TextEdit::singleline(&mut s.vban_stream).desired_width(100.0));
-            });
-            ui.label(RichText::new(tr("В OBS: плагин VBAN Audio → источник «VBAN Audio Source», порт 6980.")).size(13.0).weak());
-        }
-        let peak = app.audio.as_ref().map(|a| a.peak()).unwrap_or(0.0);
-        ui.add(egui::ProgressBar::new(peak).desired_width(300.0).text(format!("{:.0} dB", 20.0 * peak.max(1e-4).log10())));
-        if let Some(e) = app.audio.as_ref().and_then(|a| a.error()) {
-            ui.colored_label(Color32::from_rgb(220, 80, 80), e);
-        }
-    });
-}
-
-/// Model tab: model volume, spatial audio and parameter sound triggers.
-pub fn model_sound_card(app: &mut App, ui: &mut egui::Ui) {
-    let Some(key) = app.model_key() else { return };
-    let params: Vec<String> = app.avatar.as_ref().map(|a| a.model.param_ids.clone()).unwrap_or_default();
-    let dir = app.avatar.as_ref().map(|a| a.dir.clone()).unwrap_or_default();
+/// Sound settings of a model or a Live2D item (keyed by its model3 path).
+pub fn model_sound_for(app: &mut App, ui: &mut egui::Ui, title: &str, key: String, params: Vec<String>, dir: std::path::PathBuf) {
     let mut test = None;
-    section(ui, "Звук модели", |ui| {
+    section(ui, title, |ui| {
         let ms = app.settings.model_sound.entry(key.clone()).or_default();
         ui.horizontal(|ui| {
             ui.label(tr("Громкость модели"));
@@ -1454,71 +1419,6 @@ pub fn mesh_select(app: &mut App, ctx: &Context) {
             a.highlight = None;
         }
     }
-}
-
-pub fn controller_card(app: &mut App, ui: &mut egui::Ui) {
-    section(ui, "Ввод с контроллера", |ui| {
-        let devs = app.pads.devices.clone();
-        let cur = match app.settings.controller_mode {
-            0 => tr("Без контроллера").to_string(),
-            1 => tr("Все контроллеры").to_string(),
-            _ => devs.iter().find(|d| d.id == app.settings.controller_id).map(|d| d.name.clone()).unwrap_or_else(|| format!("⚠ {}", tr("контроллер отключён"))),
-        };
-        egui::ComboBox::from_id_salt("pad-select").selected_text(cur).width(320.0).show_ui(ui, |ui| {
-            if ui.selectable_label(app.settings.controller_mode == 0, tr("Без контроллера")).clicked() {
-                app.settings.controller_mode = 0;
-            }
-            if ui.selectable_label(app.settings.controller_mode == 1, tr("Все контроллеры")).clicked() {
-                app.settings.controller_mode = 1;
-            }
-            for d in &devs {
-                let label = if d.extended { format!("{} ({})", d.name, tr("тачпад и гироскоп")) } else { d.name.clone() };
-                if ui.selectable_label(app.settings.controller_mode == 2 && app.settings.controller_id == d.id, label).clicked() {
-                    app.settings.controller_mode = 2;
-                    app.settings.controller_id = d.id.clone();
-                }
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(tr("Статус:")).strong());
-            status_dot(ui, if app.pads.connected { Color32::from_rgb(60, 190, 90) } else { Color32::GRAY });
-            ui.label(if app.pads.connected { tr("Контроллер активен") } else { tr("Нет данных от контроллера") });
-            if ui.button(tr("Сбросить ориентацию")).on_hover_text(tr("Или удерживайте L1+R1+L2+R2+Треугольник 2 секунды")).clicked() {
-                app.pads.reset_orientation();
-            }
-        });
-        // Simple live widget: sticks, triggers and pressed buttons.
-        let p = app.pads.pad;
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width().min(420.0), 110.0), Sense::hover());
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 18.0, Color32::from_rgb(236, 240, 247));
-        let stick = |c: Pos2, x: f32, y: f32, pressed: bool| {
-            painter.circle_stroke(c, 24.0, Stroke::new(2.0f32, Color32::GRAY));
-            painter.circle_filled(c + Vec2::new(x, -y) * 16.0, 10.0, if pressed { BLUE } else { Color32::from_rgb(90, 90, 100) });
-        };
-        stick(rect.left_center() + Vec2::new(60.0, 10.0), p.lx, p.ly, p.buttons & crate::controller::btn::L3 != 0);
-        stick(rect.right_center() + Vec2::new(-60.0, 10.0), p.rx, p.ry, p.buttons & crate::controller::btn::R3 != 0);
-        let bar = |x: f32, v: f32| {
-            let r = egui::Rect::from_min_size(rect.left_top() + Vec2::new(x, 8.0), Vec2::new(60.0, 10.0));
-            painter.rect_filled(r, 4.0, Color32::from_rgb(210, 214, 224));
-            painter.rect_filled(egui::Rect::from_min_size(r.min, Vec2::new(60.0 * v, 10.0)), 4.0, BLUE);
-        };
-        bar(30.0, p.lt);
-        bar(rect.width() - 90.0, p.rt);
-        let names: Vec<&str> = crate::controller::PAD_KEYS.iter().filter(|k| p.buttons & k.1 != 0).map(|k| k.0.trim_start_matches("Controller")).collect();
-        painter.text(rect.center() + Vec2::new(0.0, 30.0), Align2::CENTER_CENTER, names.join(" "), FontId::proportional(13.0), TEXT);
-        egui::CollapsingHeader::new(tr("Показать список параметров")).id_salt("pad-params").show(ui, |ui| {
-            let base = crate::mapping::input::CONTROLLER_FIRST;
-            egui::Grid::new("pad-grid").num_columns(2).striped(true).show(ui, |ui| {
-                for (k, n) in crate::mapping::CONTROLLER_NAMES.iter().enumerate() {
-                    ui.label(*n);
-                    ui.label(format!("{:+.3}", app.inputs[base + k]));
-                    ui.end_row();
-                }
-            });
-        });
-        ui.label(RichText::new(tr("Кнопки контроллера и свайпы по тачпаду можно назначать на горячие клавиши (кнопка Record).")).size(13.0).weak());
-    });
 }
 
 pub fn mic_card(app: &mut App, ui: &mut egui::Ui) {

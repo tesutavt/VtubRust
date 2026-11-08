@@ -18,6 +18,7 @@ mod twitch_fx;
 mod i18n;
 mod ui_hotkeys;
 mod ui_items;
+mod ui_vts;
 mod ui_model_extra;
 mod cubism;
 mod formats;

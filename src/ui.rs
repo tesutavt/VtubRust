@@ -10,7 +10,6 @@ use crate::i18n::tr;
 use crate::library::ItemEntry;
 use crate::mapping::{Rule, INPUT_NAMES};
 use crate::scene::live2d::list_motions;
-use crate::scene::Body;
 use crate::settings::{Background, FpsMode};
 
 #[derive(PartialEq, Clone, Copy)]
@@ -52,6 +51,9 @@ pub struct UiState {
     pub selected: Option<u64>,
     pub screenshot: Option<bool>,
     thumbs: HashMap<PathBuf, Option<egui::TextureHandle>>,
+    thumb_loader: Option<ThumbLoader>,
+    /// Item picker rows, built once when the picker opens.
+    pub picker_rows: Option<Vec<crate::ui_items::PickRow>>,
     drag: Option<Drag>,
     recording: Option<usize>,
     scene_name: String,
@@ -62,13 +64,24 @@ pub struct UiState {
     pub modal: Option<Modal>,
     info_next: Option<Modal>,
     info_dont_show: bool,
-    collapsed: std::collections::HashSet<usize>,
+    pub collapsed: std::collections::HashSet<usize>,
     vfx_save_open: bool,
     vfx_preset_name: String,
     /// Last shown (settings tab, modal) — used to reset scrolling on change.
     shown: (Option<Tab>, Option<Modal>),
     cjk_fonts: bool,
     pub modal_sel: Option<usize>,
+    /// Item waiting for its one-time setup (VTS item setup before spawning).
+    pub item_setup: Option<crate::ui_items::ItemSetup>,
+    /// Item whose config menu is open (long press on the item, like in VTS).
+    pub item_menu: Option<u64>,
+    pub item_picker: bool,
+    pub item_global: bool,
+    /// Picker filter: 0 = all, 1 = animated, 2 = Live2D.
+    pub item_kind: u8,
+    pub item_sub: crate::ui_items::ItemSub,
+    /// Press on an item: (item id, time, position) — for the long press.
+    item_press: Option<(u64, std::time::Instant, Pos2)>,
     pub typing: bool,
     modal_filter: String,
     /// Choices made so far in the camera wizard: camera, (w, h), fps.
@@ -91,6 +104,8 @@ impl Default for UiState {
             selected: None,
             screenshot: None,
             thumbs: HashMap::new(),
+            thumb_loader: None,
+            picker_rows: None,
             drag: None,
             recording: None,
             scene_name: String::new(),
@@ -106,6 +121,13 @@ impl Default for UiState {
             shown: (None, None),
             cjk_fonts: false,
             modal_sel: None,
+            item_setup: None,
+            item_menu: None,
+            item_picker: false,
+            item_global: false,
+            item_kind: 0,
+            item_sub: crate::ui_items::ItemSub::Main,
+            item_press: None,
             typing: false,
             modal_filter: String::new(),
             wiz_cam: 0,
@@ -198,22 +220,54 @@ impl UiState {
         self.motions_cache = None;
     }
 
-    fn thumb(&mut self, ctx: &Context, path: &Path, budget: &mut u32) -> Option<egui::TextureId> {
+    pub fn thumb_pub(&mut self, ctx: &Context, path: &Path, budget: &mut u32) -> Option<egui::TextureId> {
+        self.thumb(ctx, path, budget)
+    }
+
+    /// Thumbnail texture; decoding happens on background threads, `None` until it is ready.
+    fn thumb(&mut self, ctx: &Context, path: &Path, _budget: &mut u32) -> Option<egui::TextureId> {
+        let loader = self.thumb_loader.get_or_insert_with(|| ThumbLoader::new(ctx.clone()));
+        while let Ok((p, img)) = loader.rx.try_recv() {
+            loader.pending.remove(&p);
+            let tex = img.map(|ci| ctx.load_texture(p.to_string_lossy(), ci, egui::TextureOptions::LINEAR));
+            self.thumbs.insert(p, tex);
+        }
         if let Some(t) = self.thumbs.get(path) {
             return t.as_ref().map(|t| t.id());
         }
-        if *budget == 0 {
-            return None;
+        if loader.pending.insert(path.to_path_buf()) {
+            let _ = loader.tx.send(path.to_path_buf());
         }
-        *budget -= 1;
-        let tex = image::open(path).ok().map(|img| {
-            let t = img.thumbnail(128, 128).to_rgba8();
-            let ci = egui::ColorImage::from_rgba_unmultiplied([t.width() as usize, t.height() as usize], t.as_raw());
-            ctx.load_texture(path.to_string_lossy(), ci, egui::TextureOptions::LINEAR)
-        });
-        let id = tex.as_ref().map(|t| t.id());
-        self.thumbs.insert(path.to_path_buf(), tex);
-        id
+        None
+    }
+}
+
+struct ThumbLoader {
+    tx: std::sync::mpsc::Sender<PathBuf>,
+    rx: std::sync::mpsc::Receiver<(PathBuf, Option<egui::ColorImage>)>,
+    pending: std::collections::HashSet<PathBuf>,
+}
+
+impl ThumbLoader {
+    fn new(ctx: Context) -> Self {
+        let (tx, jobs) = std::sync::mpsc::channel::<PathBuf>();
+        let (done, rx) = std::sync::mpsc::channel();
+        let jobs = std::sync::Arc::new(std::sync::Mutex::new(jobs));
+        for k in 0..2 {
+            let (jobs, done, ctx) = (jobs.clone(), done.clone(), ctx.clone());
+            let _ = std::thread::Builder::new().name(format!("thumbs-{k}")).spawn(move || loop {
+                let Ok(p) = jobs.lock().map_err(|_| ()).and_then(|j| j.recv().map_err(|_| ())) else { break };
+                let img = image::open(&p).ok().map(|img| {
+                    let t = img.thumbnail(128, 128).to_rgba8();
+                    egui::ColorImage::from_rgba_unmultiplied([t.width() as usize, t.height() as usize], t.as_raw())
+                });
+                if done.send((p, img)).is_err() {
+                    break;
+                }
+                ctx.request_repaint();
+            });
+        }
+        ThumbLoader { tx, rx, pending: Default::default() }
     }
 }
 
@@ -306,6 +360,7 @@ pub fn run(app: &mut App, ctx: &Context) {
     crate::ui_hotkeys::screen_buttons(app, ctx);
     crate::ui_hotkeys::reset_notice(app, ctx);
     crate::ui_hotkeys::mesh_select(app, ctx);
+    crate::ui_vts::dialogs(app, ctx);
     crate::api_events::draw_debug(app, ctx);
     let dt = app.ui_dt;
     crate::twitch_fx::run(app, ctx, dt);
@@ -357,6 +412,17 @@ fn scene_input(app: &mut App, ctx: &Context) {
             app.ui.drag = None;
             app.save();
             return;
+        }
+    }
+    if let (Some((id, t0, p0)), Some(p)) = (app.ui.item_press, pos) {
+        if !down {
+            app.ui.item_press = None;
+        } else if (p - p0).length() > 8.0 {
+            app.ui.item_press = None;
+        } else if t0.elapsed().as_secs_f32() >= 0.8 {
+            app.ui.item_press = None;
+            app.ui.item_menu = Some(id);
+            app.ui.selected = Some(id);
         }
     }
     if let Some(d) = app.ui.drag {
@@ -478,10 +544,14 @@ fn scene_input(app: &mut App, ctx: &Context) {
             Hit::Item(k) => {
                 let it = &mut app.items[k];
                 app.ui.selected = Some(it.id);
+                if it.locked && pp {
+                    app.ui.item_press = Some((it.id, std::time::Instant::now(), pos));
+                }
                 if ctrl && pp && !it.locked {
                     // VTS: Ctrl + click flips an item.
                     it.xf.flip = !it.xf.flip;
                 } else if !it.locked {
+                    app.ui.item_press = Some((it.id, std::time::Instant::now(), pos));
                     let repin = it.pin.take().is_some();
                     app.ui.drag = Some(Drag::Item { id: it.id, rotate: sp, repin });
                 }
@@ -562,7 +632,8 @@ fn toolbar(app: &mut App, ctx: &Context, e: f32) {
                 ui_state.dialog = if ui_state.dialog == Dialog::Backgrounds { Dialog::None } else { Dialog::Backgrounds };
             }
             if round_button(ui, "★", lighten(C_BG, 0.1), 20.0, ui_state.strip == Strip::Items, "Предметы").clicked() {
-                ui_state.strip = if ui_state.strip == Strip::Items { Strip::None } else { Strip::Items };
+                ui_state.strip = Strip::None;
+                ui_state.item_picker = true;
             }
             if round_button(ui, "★★", lighten(C_BG, 0.2), 20.0, ui_state.dialog == Dialog::Scenes, "Сцены предметов и хоткеи").clicked() {
                 ui_state.dialog = if ui_state.dialog == Dialog::Scenes { Dialog::None } else { Dialog::Scenes };
@@ -655,7 +726,7 @@ fn items_strip(app: &mut App, ctx: &Context, e: f32) {
                         .add_filter("Картинки / GIF / Live2D", &["png", "jpg", "jpeg", "gif", "json"])
                         .pick_file()
                     {
-                        app.actions.push(Action::AddItemFile(p));
+                        app.ui.item_setup = Some(crate::ui_items::ItemSetup::new(p, &app.settings));
                     }
                 }
                 if card(ui, "Убрать все", None, "✖", false).clicked() {
@@ -669,7 +740,7 @@ fn items_strip(app: &mut App, ctx: &Context, e: f32) {
                     };
                     let ph = if matches!(it, ItemEntry::Live2D(_)) { "Live2D" } else { "…" };
                     if card(ui, it.name(), tex, ph, false).clicked() {
-                        app.actions.push(Action::AddItem(it.clone()));
+                        app.ui.item_setup = Some(crate::ui_items::ItemSetup::new(it.path().to_path_buf(), &app.settings));
                     }
                 }
             });
@@ -797,7 +868,15 @@ fn scenes_dialog(app: &mut App, ctx: &Context) {
 }
 
 fn item_panel(app: &mut App, ctx: &Context) {
-    crate::ui_items::item_config(app, ctx);
+    crate::ui_items::item_picker(app, ctx);
+    crate::ui_items::global_settings_window(app, ctx);
+    crate::ui_items::item_setup_dialog(app, ctx);
+    // The full item menu opens on a long press on the item (VTS), not on every click.
+    if app.ui.item_menu.is_some() && app.ui.item_menu == app.ui.selected {
+        crate::ui_items::item_config(app, ctx);
+    } else {
+        app.ui.item_menu = None;
+    }
 }
 
 // ---------------------------------------------------------------------- settings
@@ -1137,8 +1216,8 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
             mouse_grid(ui, mx, my);
         });
     });
-    crate::ui_hotkeys::controller_card(app, ui);
-    crate::ui_hotkeys::sound_card(app, ui);
+    crate::ui_vts::controller_card(app, ui);
+    crate::ui_vts::sound_card(app, ui);
     crate::ui_hotkeys::mic_card(app, ui);
     crate::ui_hotkeys::twitch_card(app, ui);
     stub_card(ui, "Discord", &["Войти и активировать"], "Отключено");
@@ -2551,6 +2630,7 @@ fn model_tab(app: &mut App, ui: &mut egui::Ui) {
     let mut open: Option<Modal> = None;
     let mut autosetup = false;
 
+    let mut cust = false;
     {
         let av = app.avatar.as_mut().unwrap();
         section(ui, "", |ui| {
@@ -2609,13 +2689,12 @@ fn model_tab(app: &mut App, ui: &mut egui::Ui) {
                 blue_button(ui, tr("ОТПРАВИТЬ МОДЕЛЬ НА ТЕЛЕФОН"), BLUE, 44.0);
             });
         });
-        section(ui, tr("Громкость модели"), |ui| {
-            soon_badge(ui);
-            ui.add_enabled_ui(false, |ui| {
-                let mut v = 90.0;
-                pill_knob(ui, &mut v, 0.0..=100.0, "0", "100", "🔊");
-            });
+        section(ui, "", |ui| {
+            if blue_button(ui, tr("НАСТРОИТЬ МОДЕЛЬ  📌"), BLUE, 44.0).clicked() {
+                cust = true;
+            }
         });
+        crate::ui_vts::model_volume(&mut app.settings.model_sound, &key, ui);
         section(ui, tr("Настройка движения"), |ui| {
             toggle(ui, &mut av.cfg.move_enabled, tr("Активировать")).on_hover_text(tr("Модель смещается и приближается вслед за положением головы перед камерой"));
             ui.add_enabled_ui(av.cfg.move_enabled, |ui| {
@@ -2734,25 +2813,23 @@ fn model_tab(app: &mut App, ui: &mut egui::Ui) {
             app.ui.collapsed.clear();
             changed = true;
         }
-        if autosetup {
-            av.mapping.rules = crate::mapping::default_rules(&av.model);
-            changed = true;
-        }
         if changed {
             av.mapping.recompile(&av.model);
             app.settings.rules_override.insert(key.clone(), av.mapping.rules.clone());
         }
     }
     if autosetup {
-        app.toast("Автонастройка: маппинг собран по стандартным параметрам модели");
+        app.ui_vts.dlg = Some(crate::ui_vts::Dlg::AutoSetup);
+    }
+    if cust {
+        app.ui_vts.dlg = Some(crate::ui_vts::Dlg::Customize);
     }
     if let Some(m) = open {
         app.ui.modal = Some(m);
         app.ui.modal_sel = None;
     }
-    crate::ui_hotkeys::model_sound_card(app, ui);
-    crate::ui_model_extra::artmesh_card(app, ui);
-    crate::ui_model_extra::copy_card(app, ui);
+
+
 }
 
 // ---------------------------------------------------------------------- overlays

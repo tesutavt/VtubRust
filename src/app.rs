@@ -26,6 +26,10 @@ pub enum Action {
     AddModelFolder(PathBuf),
     AddItem(ItemEntry),
     AddItemFile(PathBuf),
+    /// Spawns an item with the one-time setup from the item dialog.
+    SpawnItem(crate::ui_items::ItemSetup),
+    /// "Create Live2D item from model": copies the current model into the Items folder.
+    ModelToItem,
     RemoveItem(u64),
     ClearItems,
     SetBackground(Background),
@@ -165,6 +169,7 @@ pub struct App {
     /// Snapshot of the current model's config (hotkeys, other) to detect ModelConfigChangedEvent.
     cfg_snapshot: (u64, u64),
     pub ui_extra: crate::ui_model_extra::ModelExtraState,
+    pub ui_vts: crate::ui_vts::VtsState,
     last: Instant,
     pub quit: bool,
     pub occluded: bool,
@@ -335,6 +340,7 @@ impl App {
             mesh_select: None,
             cfg_snapshot: (0, 0),
             ui_extra: Default::default(),
+            ui_vts: Default::default(),
             last: Instant::now(),
             quit: false,
             occluded: false,
@@ -394,6 +400,22 @@ impl App {
             }
             if let Some(px) = std::env::var("RIGRS_SCROLL").ok().and_then(|v| v.parse::<f32>().ok()) {
                 app.ui.pending_scroll = Some(px);
+            }
+            use crate::ui_vts::Dlg;
+            app.ui_vts.dlg = match std::env::var("RIGRS_DLG").unwrap_or_default().as_str() {
+                "sound" => Some(Dlg::SoundSettings),
+                "triggers" => Some(Dlg::SoundTriggers),
+                "customize" => Some(Dlg::Customize),
+                "autosetup" => Some(Dlg::AutoSetup),
+                "autoconfirm" => Some(Dlg::AutoConfirm),
+                "copy" => Some(Dlg::CopyFrom),
+                "mesh1" => Some(Dlg::Meshes(1)),
+                _ => None,
+            };
+            app.ui_vts.pad_widget = std::env::var("RIGRS_DLG").map(|v| v == "pad").unwrap_or(false);
+            if std::env::var("RIGRS_DLG").map(|v| v == "items").unwrap_or(false) {
+                app.ui.settings_open = false;
+                app.ui.item_picker = true;
             }
             app.ui.modal = match t.as_str() {
                 "camera-cam" => Some(crate::ui::Modal::Camera),
@@ -677,14 +699,16 @@ impl App {
                 .find(|p| p.to_string_lossy().ends_with(".vtube.json"));
             let mut l = Live2D::load(core, &self.gpu, source, vtube.as_deref(), None, None)?;
             l.update(0.0, &NEUTRAL, false, false);
-            l.fit(vw, vh, 0.3);
+            l.fit(vw, vh, 0.55);
             let b = l.local_bounds();
             pivot = [(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5];
             let xf = Xform { pos: [0.0, 0.0], ..l.xf };
             (Body::Live2D(Box::new(l)), xf)
         } else {
             let s = Sprite::load(&self.gpu, source)?;
-            let scale = (vh * 0.25 / s.size[1]).min(vw * 0.25 / s.size[0]);
+            // Spawn at a comfortable size (about half the window height); the mouse wheel
+            // scales items without limits, like in VTS.
+            let scale = (vh * 0.45 / s.size[1]).min(vw * 0.6 / s.size[0]);
             (Body::Sprite(s), Xform { pos: [0.0, 0.0], scale, rot: 0.0, flip: false })
         };
         let mut it = Item::new(id, source.to_path_buf(), name, body, xf, pivot);
@@ -1810,6 +1834,52 @@ impl App {
             Action::AddItem(e) => {
                 if let Some(id) = self.add_item(e.path()) {
                     self.ui.selected = Some(id);
+                }
+            }
+            Action::SpawnItem(s) => {
+                if let Some(id) = self.add_item(&s.path) {
+                    let order = crate::ui_items::free_order(self, s.order, Some(id));
+                    let details = self.artmesh_details();
+                    let item_details = self.settings.model_artmesh.get(&s.path.to_string_lossy().to_string()).cloned();
+                    if let Some(it) = self.items.iter_mut().find(|i| i.id == id) {
+                        it.cfg.order = order;
+                        it.xf.flip = s.flip;
+                        it.cfg.fps = s.fps;
+                        if let (Body::Live2D(l), Some(d)) = (&mut it.body, &item_details) {
+                            l.apply_artmesh(d);
+                        }
+                        // Spawned over the model → pinned right away.
+                        if s.pin {
+                            if let Some(a) = &self.avatar {
+                                it.pin_to_filtered(a, details.as_ref().or(a.vts_artmesh.as_ref()));
+                            }
+                        } else {
+                            it.cfg.pin_only_layer = "__never".into();
+                        }
+                    }
+                    if s.fps > 0.0 {
+                        self.settings.item_fps.insert(s.path.to_string_lossy().into_owned(), s.fps);
+                    }
+                    self.ui.selected = Some(id);
+                    if s.finetune {
+                        self.ui.item_menu = Some(id);
+                    }
+                    self.save();
+                }
+            }
+            Action::ModelToItem => {
+                if let Some(a) = &self.avatar {
+                    let dst = self.paths.data.join("Items").join(&a.name);
+                    match crate::cubism_editor::import_export(&a.model3, &self.paths.data.join("Items")) {
+                        Ok(d) => {
+                            let _ = dst;
+                            self.rescan();
+                            self.toast(format!("Модель скопирована в предметы: {}", d.display()));
+                        }
+                        Err(e) => self.toast(format!("Не удалось создать предмет: {e:#}")),
+                    }
+                } else {
+                    self.toast("Сначала загрузите модель");
                 }
             }
             Action::AddItemFile(p) => {

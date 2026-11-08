@@ -258,6 +258,13 @@ pub struct Settings {
     pub model_artmesh: HashMap<String, crate::artmesh::ArtMeshDetails>,
     /// Global item options: drag & drop of files into the window, allowed types.
     pub item_drag_drop: bool,
+    /// Last item setup choices (in front of the model, pin to model).
+    pub item_front: bool,
+    pub item_order: i32,
+    pub item_allow_images: bool,
+    pub item_allow_animated: bool,
+    pub item_allow_live2d: bool,
+    pub item_pin: bool,
     /// Live2D Cubism Editor API (VTS "Live2D Cubism Editor API" card).
     pub editor_on: bool,
     pub editor_remote: bool,
@@ -368,6 +375,12 @@ impl Default for Settings {
             item_fps: HashMap::new(),
             model_artmesh: HashMap::new(),
             item_drag_drop: true,
+            item_front: true,
+            item_order: 1,
+            item_allow_images: true,
+            item_allow_animated: true,
+            item_allow_live2d: true,
+            item_pin: true,
             editor_on: false,
             editor_remote: false,
             editor_ip: "192.168.0.2".into(),
