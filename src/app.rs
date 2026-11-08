@@ -32,6 +32,9 @@ pub enum Action {
     Screenshot { transparent: bool },
     SaveScene(String),
     LoadScene(String),
+    ToggleScene(String),
+    SetApi(bool),
+    SetTwitch(bool),
     DeleteScene(String),
     Calibrate,
     StartTracker,
@@ -117,6 +120,32 @@ pub struct App {
 
     /// Global cursor position (screen pixels).
     pub mouse: [f32; 2],
+
+    // Hotkeys
+    pub hk: crate::hotkeys::Runtime,
+    pub pending_model_xf: Option<Xform>,
+    /// Item scene currently shown by a ToggleItemScene hotkey.
+    pub active_scene: Option<String>,
+
+    // Plugin API
+    pub api: Option<crate::api::ApiServer>,
+    pub api_error: Option<String>,
+    pub api_prompts: crate::api::PromptQueue,
+    pub api_events: Vec<(String, serde_json::Value)>,
+    pub api_item_owner: std::collections::HashMap<u64, (u64, bool)>,
+    pub api_custom: std::collections::BTreeMap<String, crate::api::CustomParam>,
+    pub api_inject: crate::api::InjectMap,
+    pub api_face_found: Option<(bool, Instant)>,
+    pub api_physics: Option<(f32, Instant, String)>,
+    pub api_model_move: Option<(Xform, Xform, f32, f32)>,
+    pub api_item_moves: Vec<(u64, Xform, Xform, f32, f32, String)>,
+
+    // Twitch
+    pub twitch: Option<crate::twitch::Twitch>,
+    pub twitch_auth: Option<String>,
+    pub twitch_login: Option<std::sync::mpsc::Receiver<crate::twitch::Msg>>,
+    pub fx: crate::twitch_fx::Fx,
+    pub ui_dt: f32,
     last: Instant,
     pub quit: bool,
     pub occluded: bool,
@@ -204,6 +233,7 @@ impl App {
 
         let mut settings = settings;
         crate::vfx::normalize(&mut settings.vfx);
+        crate::i18n::set_language(&settings.language);
         let mut app = App {
             window,
             gpu,
@@ -254,6 +284,25 @@ impl App {
             actions: Vec::new(),
             toasts: Vec::new(),
             mouse: [0.0, 0.0],
+            hk: Default::default(),
+            pending_model_xf: None,
+            active_scene: None,
+            api: None,
+            api_error: None,
+            api_prompts: Default::default(),
+            api_events: Vec::new(),
+            api_item_owner: Default::default(),
+            api_custom: Default::default(),
+            api_inject: Default::default(),
+            api_face_found: None,
+            api_physics: None,
+            api_model_move: None,
+            api_item_moves: Vec::new(),
+            twitch: None,
+            twitch_auth: None,
+            twitch_login: None,
+            fx: Default::default(),
+            ui_dt: 0.0,
             last: Instant::now(),
             quit: false,
             occluded: false,
@@ -287,13 +336,19 @@ impl App {
         }
         app.apply_light_source();
         app.refresh_cameras();
+        if app.settings.api_on {
+            app.set_api(true);
+        }
+        if app.settings.twitch.enabled {
+            app.set_twitch(true);
+        }
         // Dev hook for screenshots/tests: RIGRS_OPEN_SETTINGS=general|camera|model|hotkeys
         if let Ok(t) = std::env::var("RIGRS_OPEN_SETTINGS") {
             app.ui.settings_open = true;
             app.ui.tab = match t.as_str() {
                 "camera" => crate::ui::Tab::Camera,
                 "model" => crate::ui::Tab::Model,
-                "hotkeys" => crate::ui::Tab::Hotkeys,
+                "hotkeys" | "hk-twitch" | "hk-action" => crate::ui::Tab::Hotkeys,
                 _ => crate::ui::Tab::General,
             };
             if t.starts_with("camera") {
@@ -305,6 +360,11 @@ impl App {
             app.ui.modal = match t.as_str() {
                 "camera-cam" => Some(crate::ui::Modal::Camera),
                 "camera-quality" => Some(crate::ui::Modal::Quality),
+                "hk-twitch" => Some(crate::ui::Modal::HkTwitch(0)),
+                "hk-action" => Some(crate::ui::Modal::HkAction(0)),
+                "twitch-features" => Some(crate::ui::Modal::TwitchFeatures),
+                "twitch-dropper" => Some(crate::ui::Modal::TwitchDropper),
+                "twitch-chat" => Some(crate::ui::Modal::TwitchChat),
                 _ => None,
             };
         }
@@ -531,8 +591,16 @@ impl App {
                     a.physics_chains(),
                     a.texture_bytes as f64 / 1048576.0
                 ));
+                a.load_ms = t0.elapsed().as_millis() as u64;
+                if let Some(xf) = self.pending_model_xf.take() {
+                    a.xf = xf;
+                }
+                let ev = serde_json::json!({ "modelLoaded": true, "modelName": a.name, "modelID": a.model_id });
+                self.api_events.push(("ModelLoadedEvent".into(), ev));
                 self.avatar = Some(a);
                 self.settings.last_model = Some(key);
+                self.active_scene = None;
+                crate::hotkeys::on_model_loaded(self);
                 self.save();
             }
             Err(err) => self.toast(format!("Не удалось загрузить модель: {err:#}")),
@@ -829,6 +897,110 @@ impl App {
         }
     }
 
+    pub fn set_api(&mut self, on: bool) {
+        self.settings.api_on = on;
+        self.api = None;
+        self.api_error = None;
+        if on {
+            match crate::api::ApiServer::start(self.settings.api_port, self.settings.api_lan) {
+                Ok(s) => self.api = Some(s),
+                Err(e) => {
+                    self.api_error = Some(format!("{e:#}"));
+                    self.toast(format!("API: {e:#}"));
+                }
+            }
+        }
+    }
+
+    pub fn set_twitch(&mut self, on: bool) {
+        self.settings.twitch.enabled = on;
+        self.twitch = None;
+        self.fx.clear();
+        if on {
+            let t = &self.settings.twitch;
+            if t.channel.trim().is_empty() && t.login.is_empty() {
+                self.toast("Twitch: укажите имя канала");
+                self.settings.twitch.enabled = false;
+                return;
+            }
+            self.twitch = Some(crate::twitch::Twitch::start(t));
+        }
+    }
+
+    pub fn twitch_login(&mut self) {
+        let cid = self.settings.twitch.client_id.trim().to_string();
+        if cid.is_empty() {
+            self.toast("Twitch: укажите Client ID своего приложения (dev.twitch.tv/console)");
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        crate::twitch::login(cid, tx);
+        self.twitch_login = Some(rx);
+        self.twitch_auth = Some("Запрос кода у Twitch…".into());
+    }
+
+    fn update_twitch(&mut self) {
+        use crate::twitch::Msg;
+        // Dev hook: RIGRS_FX_TEST=chat|drop keeps spawning test content.
+        if let Ok(k) = std::env::var("RIGRS_FX_TEST") {
+            if self.time > 2.0 && (self.time / 1.5).floor() != ((self.time - self.ui_dt) / 1.5).floor() {
+                crate::twitch_fx::test(self, k == "drop");
+            }
+        }
+        let mut msgs = Vec::new();
+        if let Some(rx) = &self.twitch_login {
+            while let Ok(m) = rx.try_recv() {
+                msgs.push(m);
+            }
+        }
+        if let Some(t) = self.twitch.as_mut() {
+            msgs.extend(t.drain());
+        }
+        for m in msgs {
+            match m {
+                Msg::Event(ev) => {
+                    if !matches!(ev, crate::hotkeys::TwitchEvent::Chat { .. }) {
+                        if let Some(t) = self.twitch.as_mut() {
+                            t.recent.push_front(ev.describe());
+                            t.recent.truncate(20);
+                        }
+                    }
+                    crate::hotkeys::on_twitch(self, &ev);
+                }
+                Msg::Chat(c) => {
+                    if self.settings.twitch.dropper.enabled || self.settings.twitch.chat.enabled {
+                        self.fx.on_chat(c);
+                    }
+                }
+                Msg::DeviceCode { user_code, uri } => {
+                    self.twitch_auth = Some(format!("Откройте {uri} и введите код: {user_code}"));
+                    self.actions.push(Action::OpenUrl(uri));
+                }
+                Msg::Authorized { access, refresh, login, user_id } => {
+                    let t = &mut self.settings.twitch;
+                    t.access_token = access;
+                    t.refresh_token = refresh;
+                    t.login = login.clone();
+                    t.user_id = user_id;
+                    if t.channel.trim().is_empty() {
+                        t.channel = login.clone();
+                    }
+                    self.twitch_auth = None;
+                    self.twitch_login = None;
+                    self.toast(format!("Twitch: вход выполнен как {login}"));
+                    self.set_twitch(true);
+                    self.save();
+                }
+                Msg::AuthFailed(e) => {
+                    self.twitch_auth = None;
+                    self.twitch_login = None;
+                    self.toast(e);
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn save(&mut self) {
         self.remember_avatar_xf();
         if self.settings.save_scene {
@@ -852,13 +1024,17 @@ impl App {
         self.last = t0;
         self.time += dt;
         self.update_tracking();
+        crate::api::apply_injections(self);
         self.update_mouse();
         self.update_tobii();
         self.update_lighting(dt);
         if self.demo.is_some() && !crate::demo::step(self, dt) {
             self.quit = true;
         }
+        crate::api::pump(self, dt);
+        self.update_twitch();
         let (vw, vh) = self.viewport();
+        self.ui_dt = dt;
 
         let raw = self.egui_state.take_egui_input(&self.window);
         let ctx = self.egui_ctx.clone();
@@ -1142,6 +1318,26 @@ impl App {
                     self.restore_items(&s.items);
                 }
             }
+            Action::ToggleScene(name) => {
+                let name = name.trim_end_matches(".json").to_string();
+                if self.active_scene.as_deref() == Some(name.as_str()) {
+                    self.items.clear();
+                    self.active_scene = None;
+                } else if let Some(s) = self.settings.item_scenes.iter().find(|s| s.name == name).cloned() {
+                    self.restore_items(&s.items);
+                    self.active_scene = Some(name);
+                } else {
+                    self.toast(format!("Сцена элементов «{name}» не найдена"));
+                }
+            }
+            Action::SetApi(on) => {
+                self.set_api(on);
+                self.save();
+            }
+            Action::SetTwitch(on) => {
+                self.set_twitch(on);
+                self.save();
+            }
             Action::DeleteScene(name) => {
                 self.settings.item_scenes.retain(|s| s.name != name);
                 self.save();
@@ -1224,6 +1420,9 @@ impl App {
                 self.save();
             }
             Action::SetLight(mode, monitor) => {
+                if mode != 0 {
+                    self.settings.light_last_mode = mode;
+                }
                 self.settings.light_mode = mode;
                 self.settings.light_monitor = monitor;
                 self.apply_light_source();

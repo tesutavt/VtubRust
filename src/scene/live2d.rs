@@ -106,6 +106,8 @@ pub struct Expression {
     pub file: String,
     params: Vec<(usize, f32, ExpBlend)>,
     weight: f32,
+    /// Fade time (seconds) used for the next transition.
+    pub fade: f32,
     pub active: bool,
 }
 
@@ -126,6 +128,20 @@ pub struct Live2D {
     pub idle: Option<String>,
     lost_motion: Option<Motion>,
     pub cfg: ModelCfg,
+    /// ModelID from .vtube.json (32 hex), or a stable hash of the path.
+    pub model_id: String,
+    /// Hotkeys defined in the model's .vtube.json.
+    pub vts_hotkeys: Vec<crate::hotkeys::Hotkey>,
+    /// Animation played once on top of the idle one (TriggerAnimation hotkeys).
+    oneshot: Option<(Motion, String, f32)>,
+    /// Per-drawable RGBA multiply set through the plugin API (ColorTint).
+    pub art_tint: Vec<[f32; 4]>,
+    pub load_time: std::time::Instant,
+    pub load_ms: u64,
+    /// Physics strength forced by a plugin (SetCurrentModelPhysics).
+    pub api_strength: Option<f32>,
+    pub texture_count: usize,
+    pub texture_size: u32,
     /// Multiplicative colour from the lighting overlay.
     pub tint: [f32; 3],
     /// Smoothed head-follow offset: x, y (px) and relative zoom.
@@ -217,9 +233,11 @@ impl Live2D {
         });
         let mut textures = Vec::new();
         let mut texture_bytes = 0u64;
+        let mut tex_size = 0u32;
         for img in images {
             let img = img?;
             let (w, h) = img.dimensions();
+            tex_size = tex_size.max(w);
             texture_bytes += w as u64 * h as u64 * 4;
             textures.push(gpu.texture(img.into_raw(), w, h));
         }
@@ -296,6 +314,7 @@ impl Live2D {
             idx.extend_from_slice(model.indices(i));
         }
         let pos = vec![[0.0f32; 2]; vcount];
+        let tex_count = textures.len();
         let batch = Batch::new(gpu, &pos, &uvs, &idx, model.drawables.len(), textures);
 
         let mut sets: HashMap<Vec<usize>, usize> = HashMap::new();
@@ -336,6 +355,26 @@ impl Live2D {
                 ..ModelCfg::default()
             },
             move_off: [0.0; 3],
+            model_id: vt
+                .as_ref()
+                .map(|v| v.model_id.clone())
+                .filter(|s| s.len() == 32)
+                .unwrap_or_else(|| {
+                    use std::hash::{Hash, Hasher};
+                    let mut h1 = std::collections::hash_map::DefaultHasher::new();
+                    model3.hash(&mut h1);
+                    let mut h2 = std::collections::hash_map::DefaultHasher::new();
+                    (model3, 7u8).hash(&mut h2);
+                    format!("{:016x}{:016x}", h1.finish(), h2.finish())
+                }),
+            vts_hotkeys: vt.as_ref().map(|v| v.hotkeys.clone()).unwrap_or_default(),
+            oneshot: None,
+            art_tint: vec![[1.0; 4]; n],
+            load_time: std::time::Instant::now(),
+            load_ms: 0,
+            api_strength: None,
+            texture_count: tex_count,
+            texture_size: tex_size,
             tint: [1.0; 3],
             pose,
             mapping,
@@ -374,7 +413,7 @@ impl Live2D {
                 Some((model.param(&p.id)?, p.value, b))
             })
             .collect();
-        Expression { name, file, params, weight: 0.0, active: false }
+        Expression { name, file, params, weight: 0.0, fade: 0.3, active: false }
     }
 
     pub fn set_idle(&mut self, file: Option<&str>) {
@@ -400,6 +439,21 @@ impl Live2D {
             }
             None => None,
         }
+    }
+
+    /// Plays a motion once over the idle animation. Returns false if the file is missing.
+    pub fn play_once(&mut self, file: &str) -> bool {
+        match self.load_motion(file) {
+            Some(m) => {
+                self.oneshot = Some((m, file.to_string(), 0.0));
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn drawable_index(&self, id: &str) -> Option<usize> {
+        self.model.drawables.iter().position(|d| d.id == id)
     }
 
     /// Animation played instead of the idle one while tracking is lost.
@@ -472,7 +526,7 @@ impl Live2D {
         }
         self.physics_enabled = self.cfg.physics_on;
         if let Some(ph) = &mut self.physics {
-            ph.strength = self.cfg.physics_strength / 50.0;
+            ph.strength = self.api_strength.unwrap_or(self.cfg.physics_strength) / 50.0;
             ph.rate_override = match self.cfg.physics_fps {
                 0 => None,
                 1 => Some(None),
@@ -485,6 +539,12 @@ impl Live2D {
         if let Some(mo) = mo {
             mo.apply(m, dt);
         }
+        if let Some((mo, _, w)) = &mut self.oneshot {
+            *w = (*w + dt / 0.3).min(1.0);
+            if !mo.apply_once(m, dt, *w) {
+                self.oneshot = None;
+            }
+        }
         let ctx = MapCtx {
             tracking,
             blink: self.blink.value(dt),
@@ -494,7 +554,7 @@ impl Live2D {
 
         for e in &mut self.expressions {
             let target = if e.active { 1.0 } else { 0.0 };
-            let step = dt / 0.3;
+            let step = if e.fade <= 0.001 { 1.0 } else { dt / e.fade };
             e.weight = if e.weight < target { (e.weight + step).min(target) } else { (e.weight - step).max(target) };
             if e.weight <= 0.0 {
                 continue;
@@ -605,10 +665,11 @@ impl Live2D {
         let (op, mul, scr) = (m.opacities(), m.multiply_colors(), m.screen_colors());
         for i in 0..m.drawables.len() {
             let (a, b) = (mul[i], scr[i]);
+            let at = self.art_tint[i];
             self.draw_scratch[i] = DrawData {
-                multiply: [a.x * self.tint[0], a.y * self.tint[1], a.z * self.tint[2], 1.0],
+                multiply: [a.x * self.tint[0] * at[0], a.y * self.tint[1] * at[1], a.z * self.tint[2] * at[2], 1.0],
                 screen: [b.x, b.y, b.z, 0.0],
-                opacity: [op[i], 0.0, 0.0, 0.0],
+                opacity: [op[i] * at[3], 0.0, 0.0, 0.0],
                 mask: [self.mask_set[i] as f32, if m.drawables[i].constant_flags & IS_INVERTED_MASK != 0 { 1.0 } else { 0.0 }, 0.0, 0.0],
             };
         }

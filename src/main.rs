@@ -4,7 +4,13 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod api;
 mod app;
+mod hotkeys;
+mod twitch;
+mod twitch_fx;
+mod i18n;
+mod ui_hotkeys;
 mod cubism;
 mod formats;
 mod gpu;
@@ -93,7 +99,10 @@ impl ApplicationHandler for Runner {
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
-        let Some(app) = &self.app else { return };
+        let Some(app) = &mut self.app else { return };
+        // Windows sends no WM_PAINT to a minimized window, so redraw requests are never
+        // answered; run the frame directly to keep outputs, hotkeys and the API alive.
+        let minimized = app.window.is_minimized().unwrap_or(false);
         let cap = match app.settings.fps {
             settings::FpsMode::VSyncHalf => {
                 let hz = app.window.current_monitor().and_then(|m| m.refresh_rate_millihertz()).unwrap_or(60_000) as f32 / 1000.0;
@@ -106,7 +115,11 @@ impl ApplicationHandler for Runner {
                 let now = Instant::now();
                 let period = Duration::from_secs_f32(1.0 / fps);
                 if now >= self.next_frame {
-                    app.window.request_redraw();
+                    if minimized {
+                        app.frame();
+                    } else {
+                        app.window.request_redraw();
+                    }
                     self.next_frame += period;
                     if self.next_frame < now {
                         self.next_frame = now + period;
@@ -115,6 +128,11 @@ impl ApplicationHandler for Runner {
                 el.set_control_flow(ControlFlow::WaitUntil(self.next_frame));
             }
             None => {
+                if minimized {
+                    app.frame();
+                    el.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(16)));
+                    return;
+                }
                 app.window.request_redraw();
                 el.set_control_flow(ControlFlow::Wait);
             }

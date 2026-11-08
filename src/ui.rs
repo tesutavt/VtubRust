@@ -6,11 +6,12 @@ use std::path::{Path, PathBuf};
 use egui::{Align2, Color32, Context, FontId, Pos2, RichText, Sense, Stroke, Vec2};
 
 use crate::app::{Action, App};
+use crate::i18n::tr;
 use crate::library::ItemEntry;
 use crate::mapping::{Rule, INPUT_NAMES};
 use crate::scene::live2d::list_motions;
 use crate::scene::Body;
-use crate::settings::{Background, FpsMode, Hotkey, HotkeyAction};
+use crate::settings::{Background, FpsMode};
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum Strip {
@@ -67,7 +68,8 @@ pub struct UiState {
     /// Last shown (settings tab, modal) — used to reset scrolling on change.
     shown: (Option<Tab>, Option<Modal>),
     cjk_fonts: bool,
-    modal_sel: Option<usize>,
+    pub modal_sel: Option<usize>,
+    pub typing: bool,
     modal_filter: String,
     /// Choices made so far in the camera wizard: camera, (w, h), fps.
     wiz_cam: i32,
@@ -104,6 +106,7 @@ impl Default for UiState {
             shown: (None, None),
             cjk_fonts: false,
             modal_sel: None,
+            typing: false,
             modal_filter: String::new(),
             wiz_cam: 0,
             wiz_res: (0, 0),
@@ -171,12 +174,12 @@ pub fn setup_style(ctx: &Context, scale: f32) {
     ctx.set_zoom_factor(scale.clamp(0.5, 3.0));
 }
 
-fn lighten(c: Color32, t: f32) -> Color32 {
+pub(crate) fn lighten(c: Color32, t: f32) -> Color32 {
     let l = |x: u8| (x as f32 + (255.0 - x as f32) * t) as u8;
     Color32::from_rgb(l(c.r()), l(c.g()), l(c.b()))
 }
 
-fn round_button(ui: &mut egui::Ui, icon: &str, color: Color32, radius: f32, active: bool, tip: &str) -> egui::Response {
+pub(crate) fn round_button(ui: &mut egui::Ui, icon: &str, color: Color32, radius: f32, active: bool, tip: &str) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(radius * 2.0), Sense::click());
     let c = if resp.hovered() { lighten(color, 0.18) } else { color };
     let p = ui.painter();
@@ -186,7 +189,7 @@ fn round_button(ui: &mut egui::Ui, icon: &str, color: Color32, radius: f32, acti
         p.circle_stroke(rect.center(), radius - 2.0, Stroke::new(3.0, Color32::WHITE));
     }
     p.text(rect.center(), Align2::CENTER_CENTER, icon, FontId::proportional(radius * 0.95), Color32::WHITE);
-    resp.on_hover_text(tip)
+    resp.on_hover_text(tr(tip))
 }
 
 impl UiState {
@@ -300,13 +303,18 @@ pub fn run(app: &mut App, ctx: &Context) {
             p.circle_stroke(Pos2::new(sx / ppp, sy / ppp), 14.0, Stroke::new(3.0, Color32::from_rgb(240, 70, 80)));
         }
     }
+    crate::ui_hotkeys::screen_buttons(app, ctx);
+    let dt = app.ui_dt;
+    crate::twitch_fx::run(app, ctx, dt);
+    crate::ui_hotkeys::api_prompt(app, ctx);
     toasts(app, ctx);
+    app.ui.typing = ctx.output(|o| o.ime.is_some());
     if let Some(e) = &app.core_error {
         egui::Area::new(egui::Id::new("core-err")).anchor(Align2::CENTER_TOP, [0.0, 12.0]).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.colored_label(Color32::RED, "Cubism Core не загружен");
                 ui.label(e);
-                ui.label("Настройки → Общее → путь к Live2DCubismCore.dll");
+                ui.label(tr("Настройки → Общее → путь к Live2DCubismCore.dll"));
             });
         });
     }
@@ -359,8 +367,10 @@ fn scene_input(app: &mut App, ctx: &Context) {
             }
         }
         if released || !down {
-            if let Drag::Item { id, repin: true, .. } = d {
+            // Like VTS: an item dropped onto the model sticks to the spot it was dropped on.
+            if let Drag::Item { id, .. } = d {
                 if let (Some(it), Some(a)) = (app.items.iter_mut().find(|i| i.id == id), &app.avatar) {
+                    it.pin = None;
                     it.pin_to(a);
                 }
             }
@@ -393,6 +403,8 @@ fn scene_input(app: &mut App, ctx: &Context) {
     };
 
     if pp || sp {
+        let item_id = if let Hit::Item(k) = hit { Some(app.items[k].id) } else { None };
+        crate::api::on_click(app, w, [pos.x * ppp, pos.y * ppp], if pp { 0 } else { 1 }, item_id);
         match hit {
             Hit::Item(k) => {
                 let it = &mut app.items[k];
@@ -441,53 +453,9 @@ fn hotkeys(app: &mut App, ctx: &Context) {
     if !app.ui.visible && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         app.ui.visible = true;
     }
-    if let Some(i) = app.ui.recording {
-        let got = ctx.input(|inp| {
-            inp.events.iter().find_map(|e| match e {
-                egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
-                _ => None,
-            })
-        });
-        if let Some((key, m)) = got {
-            if let Some(hk) = app.settings.hotkeys.get_mut(i) {
-                if key == egui::Key::Escape {
-                    hk.key.clear();
-                } else {
-                    hk.key = key.name().to_string();
-                    hk.ctrl = m.ctrl;
-                    hk.shift = m.shift;
-                    hk.alt = m.alt;
-                }
-            }
-            app.ui.recording = None;
-            app.save();
-        }
-        return;
-    }
-    if !app.settings.hotkeys_enabled || ctx.wants_keyboard_input() {
-        return;
-    }
-    let mut fired = Vec::new();
-    ctx.input(|inp| {
-        for hk in app.settings.hotkeys.iter().filter(|h| h.enabled) {
-            let Some(key) = egui::Key::from_name(&hk.key) else { continue };
-            let m = inp.modifiers;
-            if inp.key_pressed(key) && m.ctrl == hk.ctrl && m.shift == hk.shift && m.alt == hk.alt {
-                fired.push(hk.action.clone());
-            }
-        }
-    });
-    for a in fired {
-        match a {
-            HotkeyAction::ToggleExpression(e) => app.actions.push(Action::ToggleExpression(e)),
-            HotkeyAction::LoadItemScene(s) => app.actions.push(Action::LoadScene(s)),
-            HotkeyAction::ClearItems => app.actions.push(Action::ClearItems),
-            HotkeyAction::Calibrate => app.actions.push(Action::Calibrate),
-            HotkeyAction::Screenshot => app.ui.screenshot = Some(false),
-            HotkeyAction::ToggleUi => app.ui.visible = !app.ui.visible,
-            HotkeyAction::ResetExpressions => app.actions.push(Action::ResetExpressions),
-        }
-    }
+    // Only a focused text field blocks hotkeys (egui also focuses buttons on Tab).
+    let typing = app.window.has_focus() && app.ui.typing;
+    crate::hotkeys::update(app, typing);
 }
 
 // ---------------------------------------------------------------------- toolbar
@@ -549,7 +517,7 @@ fn toolbar(app: &mut App, ctx: &Context, e: f32) {
 
 fn filter_row(ui: &mut egui::Ui, filter: &mut String) {
     ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(filter).hint_text("Фильтр").desired_width(300.0));
+        ui.add(egui::TextEdit::singleline(filter).hint_text(tr("Фильтр")).desired_width(300.0));
         if ui.button("✖").clicked() {
             filter.clear();
         }
@@ -635,7 +603,7 @@ fn items_strip(app: &mut App, ctx: &Context, e: f32) {
 
 fn backgrounds_dialog(app: &mut App, ctx: &Context) {
     let mut open = true;
-    egui::Window::new("Выберите фон")
+    egui::Window::new(tr("Выберите фон"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -645,18 +613,18 @@ fn backgrounds_dialog(app: &mut App, ctx: &Context) {
             let cur = app.settings.background.clone();
             let mut pick = None;
             ui.horizontal(|ui| {
-                if ui.selectable_label(cur == Background::Color([0.0; 3]), "Чёрный").clicked() {
+                if ui.selectable_label(cur == Background::Color([0.0; 3]), tr("Чёрный")).clicked() {
                     pick = Some(Background::Color([0.0; 3]));
                 }
                 if ui.selectable_label(cur == Background::Color([0.0, 1.0, 0.0]), "Хромакей").clicked() {
                     pick = Some(Background::Color([0.0, 1.0, 0.0]));
                 }
-                if ui.selectable_label(cur == Background::Transparent, "Прозрачный").on_hover_text("Для Spout2 и скриншотов").clicked() {
+                if ui.selectable_label(cur == Background::Transparent, tr("Прозрачный")).on_hover_text(tr("Для Spout2 и скриншотов")).clicked() {
                     pick = Some(Background::Transparent);
                 }
             });
             ui.horizontal(|ui| {
-                ui.label("Свой цвет:");
+                ui.label(tr("Свой цвет:"));
                 let mut c = if let Background::Color(c) = cur { c } else { [0.2, 0.2, 0.25] };
                 if ui.color_edit_button_rgb(&mut c).changed() {
                     pick = Some(Background::Color(c));
@@ -683,7 +651,7 @@ fn backgrounds_dialog(app: &mut App, ctx: &Context) {
                     });
                 }
             });
-            ui.label(RichText::new("Видеофоны (mp4) пока не поддерживаются").small().weak());
+            ui.label(RichText::new(tr("Видеофоны (mp4) пока не поддерживаются")).small().weak());
             if let Some(b) = pick {
                 app.actions.push(Action::SetBackground(b));
             }
@@ -695,7 +663,7 @@ fn backgrounds_dialog(app: &mut App, ctx: &Context) {
 
 fn scenes_dialog(app: &mut App, ctx: &Context) {
     let mut open = true;
-    egui::Window::new("Сцены предметов")
+    egui::Window::new(tr("Сцены предметов"))
         .open(&mut open)
         .collapsible(false)
         .default_width(420.0)
@@ -703,9 +671,9 @@ fn scenes_dialog(app: &mut App, ctx: &Context) {
         .show(ctx, |ui| {
             ui.label(format!("Сейчас на сцене предметов: {}", app.items.len()));
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut app.ui.scene_name).hint_text("Название сцены"));
+                ui.add(egui::TextEdit::singleline(&mut app.ui.scene_name).hint_text(tr("Название сцены")));
                 let name = app.ui.scene_name.trim().to_string();
-                if ui.add_enabled(!name.is_empty(), egui::Button::new("Сохранить")).clicked() {
+                if ui.add_enabled(!name.is_empty(), egui::Button::new(tr("Сохранить"))).clicked() {
                     app.actions.push(Action::SaveScene(name));
                     app.ui.scene_name.clear();
                 }
@@ -715,24 +683,27 @@ fn scenes_dialog(app: &mut App, ctx: &Context) {
                 ui.horizontal(|ui| {
                     ui.label(format!("{} ({} шт.)", s.name, s.items.len()));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("🗑").on_hover_text("Удалить").clicked() {
+                        if ui.button("🗑").on_hover_text(tr("Удалить")).clicked() {
                             app.actions.push(Action::DeleteScene(s.name.clone()));
                         }
-                        if ui.button("⌨ Хоткей").on_hover_text("Назначить горячую клавишу").clicked() {
-                            app.settings.hotkeys.push(Hotkey {
-                                name: format!("Сцена: {}", s.name),
-                                enabled: true,
-                                key: String::new(),
-                                ctrl: false,
-                                shift: false,
-                                alt: false,
-                                action: HotkeyAction::LoadItemScene(s.name.clone()),
-                            });
-                            app.ui.recording = Some(app.settings.hotkeys.len() - 1);
-                            app.ui.settings_open = true;
-                            app.ui.tab = Tab::Hotkeys;
+                        if ui.button(tr("⌨ Хоткей")).on_hover_text(tr("Назначить горячую клавишу")).clicked() {
+                            if let Some(list) = app.hotkeys_mut() {
+                                list.push(crate::hotkeys::Hotkey {
+                                    name: format!("Сцена: {}", s.name),
+                                    action: "ToggleItemScene".into(),
+                                    file: s.name.clone(),
+                                    ..Default::default()
+                                });
+                                let n = list.len() - 1;
+                                app.hk.recording = Some((n, Vec::new(), false));
+                                app.ui.settings_open = true;
+                                app.ui.tab = Tab::Hotkeys;
+                                app.ui.scroll_req = Some(f32::MAX);
+                            } else {
+                                app.toast("Сначала загрузите модель — горячие клавиши хранятся у модели");
+                            }
                         }
-                        if ui.button("Загрузить").clicked() {
+                        if ui.button(tr("Загрузить")).clicked() {
                             app.actions.push(Action::LoadScene(s.name.clone()));
                         }
                     });
@@ -753,7 +724,7 @@ fn item_panel(app: &mut App, ctx: &Context) {
     let mut open = true;
     let mut remove = false;
     let mut move_by: i32 = 0;
-    egui::Window::new("Предмет")
+    egui::Window::new(tr("Предмет"))
         .id(egui::Id::new("item-panel"))
         .open(&mut open)
         .collapsible(false)
@@ -763,24 +734,13 @@ fn item_panel(app: &mut App, ctx: &Context) {
             let has_avatar = app.avatar.is_some();
             let it = &mut app.items[idx];
             ui.label(RichText::new(&it.name).strong());
-            ui.checkbox(&mut it.front, "Перед моделью");
-            let mut pinned = it.pin.is_some();
-            let r = ui.add_enabled(has_avatar, egui::Checkbox::new(&mut pinned, "Прикрепить к модели"));
-            if r.changed() {
-                if pinned {
-                    if let Some(a) = &app.avatar {
-                        if !it.pin_to(a) {
-                            app.toasts.push(("Поставьте предмет поверх модели, чтобы прикрепить".into(), std::time::Instant::now()));
-                        }
-                    }
-                } else {
-                    it.pin = None;
-                }
-            }
-            ui.checkbox(&mut it.locked, "Заблокировать");
-            ui.checkbox(&mut it.xf.flip, "Отразить");
+            ui.checkbox(&mut it.front, tr("Перед моделью"));
+            let _ = has_avatar;
+            ui.label(RichText::new(if it.pin.is_some() { "📌 Закреплён на модели (перетащите, чтобы перевесить)" } else { "Не закреплён — положите предмет на модель" }).weak());
+            ui.checkbox(&mut it.locked, tr("Заблокировать"));
+            ui.checkbox(&mut it.xf.flip, tr("Отразить"));
             ui.horizontal(|ui| {
-                ui.label("Размер");
+                ui.label(tr("Размер"));
                 let mut s = it.xf.scale;
                 if ui.add(egui::DragValue::new(&mut s).speed(0.01).range(0.01..=50.0)).changed() {
                     if let Some(p) = &mut it.pin {
@@ -788,7 +748,7 @@ fn item_panel(app: &mut App, ctx: &Context) {
                     }
                     it.xf.scale = s;
                 }
-                ui.label("Поворот");
+                ui.label(tr("Поворот"));
                 let mut r = it.xf.rot;
                 if ui.add(egui::DragValue::new(&mut r).speed(1.0).suffix("°")).changed() {
                     if let Some(p) = &mut it.pin {
@@ -798,13 +758,13 @@ fn item_panel(app: &mut App, ctx: &Context) {
                 }
             });
             ui.horizontal(|ui| {
-                if ui.button("⬆ Выше").clicked() {
+                if ui.button(tr("⬆ Выше")).clicked() {
                     move_by = 1;
                 }
-                if ui.button("⬇ Ниже").clicked() {
+                if ui.button(tr("⬇ Ниже")).clicked() {
                     move_by = -1;
                 }
-                if ui.button("🗑 Удалить").clicked() {
+                if ui.button(tr("🗑 Удалить")).clicked() {
                     remove = true;
                 }
             });
@@ -826,22 +786,22 @@ fn item_panel(app: &mut App, ctx: &Context) {
 
 // ---------------------------------------------------------------------- settings
 
-const BLUE: Color32 = Color32::from_rgb(24, 132, 236);
-const TEXT: Color32 = Color32::from_rgb(70, 70, 78);
+pub(crate) const BLUE: Color32 = Color32::from_rgb(24, 132, 236);
+pub(crate) const TEXT: Color32 = Color32::from_rgb(70, 70, 78);
 const PANEL_W: f32 = 580.0;
 const BAR_H: f32 = 64.0;
 
-fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+pub(crate) fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
     Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
 /// Switch with a label (click either).
-fn toggle(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
+pub(crate) fn toggle(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
     ui.horizontal(|ui| {
         let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(50.0, 26.0), Sense::click());
         let col = if *on && ui.is_enabled() { TEXT } else { Color32::GRAY };
-        let lr = ui.add(egui::Label::new(RichText::new(label).size(17.0).color(col)).sense(Sense::click()));
+        let lr = ui.add(egui::Label::new(RichText::new(tr(label)).size(17.0).color(col)).sense(Sense::click()));
         if resp.clicked() || lr.clicked() {
             *on = !*on;
             resp.mark_changed();
@@ -857,24 +817,24 @@ fn toggle(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
     .inner
 }
 
-fn blue_button(ui: &mut egui::Ui, text: &str, color: Color32, height: f32) -> egui::Response {
+pub(crate) fn blue_button(ui: &mut egui::Ui, text: &str, color: Color32, height: f32) -> egui::Response {
     let w = ui.available_width();
-    ui.add_sized([w, height], egui::Button::new(RichText::new(text).size(17.0).color(Color32::WHITE)).fill(color).rounding(9.0))
+    ui.add_sized([w, height], egui::Button::new(RichText::new(tr(text)).size(17.0).color(Color32::WHITE)).fill(color).rounding(9.0))
 }
 
 /// Big two-line blue button (title + subtitle).
-fn big_button(ui: &mut egui::Ui, title: &str, sub: &str, icon: &str) -> egui::Response {
+pub(crate) fn big_button(ui: &mut egui::Ui, title: &str, sub: &str, icon: &str) -> egui::Response {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 72.0), Sense::click());
     let p = ui.painter();
     p.rect_filled(rect, 10.0, if resp.hovered() { lighten(BLUE, 0.12) } else { BLUE });
-    p.text(rect.center() - Vec2::new(0.0, 12.0), Align2::CENTER_CENTER, title, FontId::proportional(23.0), Color32::WHITE);
-    p.text(rect.center() + Vec2::new(0.0, 16.0), Align2::CENTER_CENTER, sub, FontId::proportional(15.0), Color32::WHITE);
+    p.text(rect.center() - Vec2::new(0.0, 12.0), Align2::CENTER_CENTER, tr(title), FontId::proportional(23.0), Color32::WHITE);
+    p.text(rect.center() + Vec2::new(0.0, 16.0), Align2::CENTER_CENTER, tr(sub), FontId::proportional(15.0), Color32::WHITE);
     p.text(rect.right_top() + Vec2::new(-22.0, 18.0), Align2::CENTER_CENTER, icon, FontId::proportional(24.0), Color32::WHITE);
     resp
 }
 
-fn card_frame() -> egui::Frame {
+pub(crate) fn card_frame() -> egui::Frame {
     egui::Frame::none()
         .fill(Color32::WHITE)
         .rounding(14.0)
@@ -883,11 +843,11 @@ fn card_frame() -> egui::Frame {
 }
 
 /// White rounded card with a title.
-fn section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
     card_frame().show(ui, |ui| {
         ui.set_width(ui.available_width());
         if !title.is_empty() {
-            ui.label(RichText::new(title).size(25.0).color(TEXT));
+            ui.label(RichText::new(tr(title)).size(25.0).color(TEXT));
             ui.add_space(6.0);
         }
         add(ui);
@@ -896,13 +856,13 @@ fn section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// Status dot painted as a circle (the default fonts lack "●").
-fn status_dot(ui: &mut egui::Ui, color: Color32) {
+pub(crate) fn status_dot(ui: &mut egui::Ui, color: Color32) {
     let (r, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
     ui.painter().circle_filled(r.center(), 6.5, color);
 }
 
 fn soon_badge(ui: &mut egui::Ui) {
-    ui.label(RichText::new(" в разработке ").small().color(Color32::WHITE).background_color(Color32::from_rgb(236, 96, 128)));
+    ui.label(RichText::new(tr(" в разработке ")).small().color(Color32::WHITE).background_color(Color32::from_rgb(236, 96, 128)));
 }
 
 /// Card for a feature that is not implemented yet: same layout, disabled controls.
@@ -917,9 +877,9 @@ fn stub_card(ui: &mut egui::Ui, title: &str, toggles: &[&str], status: &str) {
         });
         if !status.is_empty() {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Статус:").strong().color(TEXT));
+                ui.label(RichText::new(tr("Статус:")).strong().color(TEXT));
                 status_dot(ui, Color32::GRAY);
-                ui.label(RichText::new(status).color(TEXT));
+                ui.label(RichText::new(tr(status)).color(TEXT));
             });
         }
     });
@@ -934,7 +894,7 @@ fn tab_icon(ui: &mut egui::Ui, icon: &str, selected: bool, tip: &str) -> egui::R
         p.rect_filled(rect, 6.0, Color32::from_rgb(238, 242, 247));
     }
     p.text(rect.center(), Align2::CENTER_CENTER, icon, FontId::proportional(30.0), Color32::from_rgb(40, 40, 46));
-    resp.on_hover_text(tip)
+    resp.on_hover_text(tr(tip))
 }
 
 fn settings_panel(app: &mut App, ctx: &Context, e: f32) {
@@ -945,7 +905,7 @@ fn settings_panel(app: &mut App, ctx: &Context, e: f32) {
             ui.set_width(screen.width() - 32.0);
             ui.set_height(BAR_H - 12.0);
             ui.horizontal_centered(|ui| {
-                for (tab, icon, tip) in [(Tab::General, "⚙", "Общие настройки"), (Tab::Camera, "📷", "Камера и трекинг"), (Tab::Model, "👤", "Настройки модели"), (Tab::Hotkeys, "🎬", "Горячие клавиши")] {
+                for (tab, icon, tip) in [(Tab::General, "⚙", tr("Общие настройки")), (Tab::Camera, "📷", tr("Камера и трекинг")), (Tab::Model, "👤", tr("Настройки модели")), (Tab::Hotkeys, "🎬", tr("Горячие клавиши"))] {
                     if tab_icon(ui, icon, app.ui.tab == tab, tip).clicked() {
                         app.ui.tab = tab;
                         app.ui.scroll_req = Some(0.0);
@@ -954,7 +914,7 @@ fn settings_panel(app: &mut App, ctx: &Context, e: f32) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::click());
                     ui.painter().text(rect.center(), Align2::CENTER_CENTER, "✖", FontId::proportional(38.0), Color32::from_rgb(240, 96, 96));
-                    if resp.on_hover_text("Закрыть настройки").clicked() {
+                    if resp.on_hover_text(tr("Закрыть настройки")).clicked() {
                         app.ui.settings_open = false;
                         app.save();
                     }
@@ -970,7 +930,7 @@ fn settings_panel(app: &mut App, ctx: &Context, e: f32) {
     // "Model lock" pill on the left.
     egui::Area::new(egui::Id::new("lock-pill")).fixed_pos(Pos2::new(36.0 - (1.0 - e) * 360.0, BAR_H + 26.0)).show(ctx, |ui| {
         let locked = app.settings.avatar_locked;
-        let text = format!("{}  Блокировка модели", if locked { "🔒" } else { "🔓" });
+        let text = format!("{}  {}", if locked { "🔒" } else { "🔓" }, tr("Блокировка модели"));
         let b = egui::Button::new(RichText::new(text).size(19.0).color(TEXT)).fill(Color32::WHITE).rounding(14.0).min_size(Vec2::new(0.0, 48.0));
         if ui.add(b).clicked() {
             app.settings.avatar_locked = !locked;
@@ -998,7 +958,7 @@ fn settings_panel(app: &mut App, ctx: &Context, e: f32) {
                 Tab::General => general_tab(app, ui),
                 Tab::Camera => camera_tab(app, ui),
                 Tab::Model => model_tab(app, ui),
-                Tab::Hotkeys => hotkeys_tab(app, ui),
+                Tab::Hotkeys => crate::ui_hotkeys::hotkeys_tab(app, ui),
             }
             ui.add_space(40.0);
         });
@@ -1049,30 +1009,40 @@ fn mouse_grid(ui: &mut egui::Ui, x: f32, y: f32) {
 }
 
 fn general_tab(app: &mut App, ui: &mut egui::Ui) {
-    section(ui, "Общие настройки", |ui| {
-        toggle(ui, &mut app.settings.log_to_file, "Вести лог в файл");
-        toggle(ui, &mut app.settings.save_scene, "Сохранять сцену");
-        toggle(ui, &mut app.settings.show_stats, "Статистика производительности");
+    section(ui, tr("Общие настройки"), |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(tr("🌐 Язык / Language")).size(17.0));
+            for (code, name) in [("ru", "Русский"), ("en", "English")] {
+                if ui.selectable_label(app.settings.language == code, RichText::new(name).size(17.0)).clicked() {
+                    app.settings.language = code.into();
+                    crate::i18n::set_language(code);
+                    app.save();
+                }
+            }
+        });
+        toggle(ui, &mut app.settings.log_to_file, tr("Вести лог в файл"));
+        toggle(ui, &mut app.settings.save_scene, tr("Сохранять сцену"));
+        toggle(ui, &mut app.settings.show_stats, tr("Статистика производительности"));
         let mut gpu_prio = !app.settings.low_power_gpu;
-        if toggle(ui, &mut gpu_prio, "Приоритет видеокарты").on_hover_text("Дискретная видеокарта; применяется после перезапуска").changed() {
+        if toggle(ui, &mut gpu_prio, tr("Приоритет видеокарты")).on_hover_text(tr("Дискретная видеокарта; применяется после перезапуска")).changed() {
             app.settings.low_power_gpu = !gpu_prio;
         }
         ui.add_space(10.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             ui.set_max_width(340.0);
             ui.vertical(|ui| {
-                if blue_button(ui, "Сбросить настройки  ↺", BLUE, 40.0).clicked() {
+                if blue_button(ui, tr("Сбросить настройки  ↺"), BLUE, 40.0).clicked() {
                     app.actions.push(Action::ResetSettings);
                 }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     let w = ui.available_width();
-                    let fsb = egui::Button::new(RichText::new("На весь экран").size(17.0).strong().color(Color32::WHITE)).fill(BLUE).rounding(9.0);
+                    let fsb = egui::Button::new(RichText::new(tr("На весь экран")).size(17.0).strong().color(Color32::WHITE)).fill(BLUE).rounding(9.0);
                     if ui.add_sized([w * 0.62, 40.0], fsb).clicked() {
                         let fs = app.window.fullscreen().is_some();
                         app.window.set_fullscreen(if fs { None } else { Some(winit::window::Fullscreen::Borderless(None)) });
                     }
-                    let q = egui::Button::new(RichText::new("Закрыть\nпрограмму").size(13.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(236, 96, 128)).rounding(9.0);
+                    let q = egui::Button::new(RichText::new(tr("Закрыть\nпрограмму")).size(13.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(236, 96, 128)).rounding(9.0);
                     if ui.add_sized([ui.available_width(), 40.0], q).clicked() {
                         app.actions.push(Action::Quit);
                     }
@@ -1081,16 +1051,16 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
         });
     });
     section(ui, "", |ui| {
-        if big_button(ui, "Открыть папку данных", "Импорт моделей, фонов, предметов и пр.", "📁").clicked() {
+        if big_button(ui, tr("Открыть папку данных"), tr("Импорт моделей, фонов, предметов и пр."), "📁").clicked() {
             app.actions.push(Action::OpenDataFolder);
         }
     });
     section(ui, "", |ui| {
-        if big_button(ui, "Запустить ещё одно окно", "Запуск ещё одного экземпляра rigrs", "➕").clicked() {
+        if big_button(ui, tr("Запустить ещё одно окно"), tr("Запуск ещё одного экземпляра rigrs"), "➕").clicked() {
             app.actions.push(Action::NewInstance);
         }
     });
-    section(ui, "Пути", |ui| {
+    section(ui, tr("Пути"), |ui| {
         let mut changed = path_row(ui, "Папка VTube Studio (модели, фоны, предметы):", &mut app.settings.vts_dir, || rfd::FileDialog::new().pick_folder());
         changed |= path_row(ui, "Live2DCubismCore.dll:", &mut app.settings.core_dll, || rfd::FileDialog::new().add_filter("DLL", &["dll"]).pick_file());
         changed |= path_row(ui, "OpenSeeFace facetracker.exe:", &mut app.settings.tracker_exe, || rfd::FileDialog::new().add_filter("EXE", &["exe"]).pick_file());
@@ -1098,7 +1068,7 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
             app.actions.push(Action::ReloadCore);
         }
         ui.horizontal(|ui| {
-            if ui.button("Пересканировать папки").clicked() {
+            if ui.button(tr("Пересканировать папки")).clicked() {
                 app.actions.push(Action::Rescan);
             }
             if let Some(c) = app.core {
@@ -1106,17 +1076,17 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
             }
         });
         ui.horizontal(|ui| {
-            ui.label("Масштаб интерфейса");
+            ui.label(tr("Масштаб интерфейса"));
             if ui.add(egui::Slider::new(&mut app.settings.ui_scale, 0.6..=2.0)).changed() {
                 ui.ctx().set_zoom_factor(app.settings.ui_scale);
             }
         });
     });
-    stub_card(ui, "Настройки Wi-Fi-соединения", &["Запустить сервер"], "Сервер отключен");
-    stub_card(ui, "Настройки USB-соединения", &["Подключиться через USB"], "Отключено");
-    stub_card(ui, "API для плагинов", &["Запустить API (плагины)"], "API выключен (порт 8001)");
+    stub_card(ui, tr("Настройки Wi-Fi-соединения"), &["Запустить сервер"], "Сервер отключен");
+    stub_card(ui, tr("Настройки USB-соединения"), &["Подключиться через USB"], "Отключено");
+    crate::ui_hotkeys::api_card(app, ui);
     stub_card(ui, "Live2D Cubism Editor API", &["Запустить", "Подключиться к Editor на удалённом ПК", "Отправлять значения в редактор"], "Выкл.");
-    section(ui, "Настройка ввода мыши", |ui| {
+    section(ui, tr("Настройка ввода мыши"), |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("X: {:.0}", app.mouse[0])).size(17.0));
             ui.add_space(80.0);
@@ -1129,19 +1099,19 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
             ui.label("");
             ui.label("max");
             ui.end_row();
-            ui.label("Диапазон по оси X");
+            ui.label(tr("Диапазон по оси X"));
             ui.add(egui::DragValue::new(&mut r[0]).speed(1.0));
             ui.label("—");
             ui.add(egui::DragValue::new(&mut r[1]).speed(1.0));
             ui.end_row();
-            ui.label("Диапазон по оси Y");
+            ui.label(tr("Диапазон по оси Y"));
             ui.add(egui::DragValue::new(&mut r[2]).speed(1.0));
             ui.label("—");
             ui.add(egui::DragValue::new(&mut r[3]).speed(1.0));
             ui.end_row();
         });
         ui.add_space(6.0);
-        ui.label("Параметры на выходе (входы MousePositionX / MousePositionY)");
+        ui.label(tr("Параметры на выходе (входы MousePositionX / MousePositionY)"));
         let (mx, my) = (app.inputs[crate::mapping::input::MOUSE_POSITION_X], app.inputs[crate::mapping::input::MOUSE_POSITION_Y]);
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
@@ -1151,10 +1121,10 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
             mouse_grid(ui, mx, my);
         });
     });
-    stub_card(ui, "Ввод с контроллера", &["Использовать контроллер"], "Отключено");
-    stub_card(ui, "Звуковые эффекты", &["Воспроизводить в приложении", "Отправлять в OBS"], "");
-    stub_card(ui, "Настройки микрофона", &["Микрофон", "Прослушивание"], "Липсинк по микрофону — следующий этап");
-    stub_card(ui, "Настройки Twitch", &["Войти и активировать"], "Отключено");
+    stub_card(ui, tr("Ввод с контроллера"), &["Использовать контроллер"], "Отключено");
+    stub_card(ui, tr("Звуковые эффекты"), &["Воспроизводить в приложении", "Отправлять в OBS"], "");
+    stub_card(ui, tr("Настройки микрофона"), &["Микрофон", "Прослушивание"], "Липсинк по микрофону — следующий этап");
+    crate::ui_hotkeys::twitch_card(app, ui);
     stub_card(ui, "Discord", &["Войти и активировать"], "Отключено");
     stub_card(ui, "mocopi", &["Запустить", "Показывать параметры трекинга"], "Отключено");
 }
@@ -1179,6 +1149,17 @@ pub enum Modal {
     VfxPresetDelete,
     /// Information dialog (id), followed by `info_next` when dismissed.
     Info(u8),
+    HkAction(usize),
+    HkFile(usize),
+    /// Gesture picker: hotkey, left hand?
+    HkGesture(usize, bool),
+    HkTwitch(usize),
+    HkSound(usize),
+    TwitchReward(usize),
+    TwitchFeatures,
+    TwitchDropper,
+    TwitchChat,
+    TwitchTriggersCfg,
 }
 
 pub const INFO_MASKS: u8 = 0;
@@ -1279,11 +1260,11 @@ fn vfx_edit_dialog(app: &mut App, ctx: &Context, idx: usize) {
             ui.style_mut().visuals.override_text_color = Some(TEXT);
             ui.label(RichText::new(def.name).size(26.0));
             if def.distorts {
-                ui.label(RichText::new("Эффект искажает картинку: привязка предметов на экране может выглядеть смещённой.").color(Color32::from_rgb(236, 30, 160)));
+                ui.label(RichText::new(tr("Эффект искажает картинку: привязка предметов на экране может выглядеть смещённой.")).color(Color32::from_rgb(236, 30, 160)));
             }
             ui.add_space(8.0);
             let c = &mut app.settings.vfx[idx];
-            toggle(ui, &mut c.on, "Включить эффект");
+            toggle(ui, &mut c.on, tr("Включить эффект"));
             ui.add_space(6.0);
             for (k, prm) in def.params.iter().enumerate() {
                 if k == 0 && !def.choices.is_empty() {
@@ -1305,13 +1286,13 @@ fn vfx_edit_dialog(app: &mut App, ctx: &Context, idx: usize) {
             }
             if def.color.is_some() {
                 ui.horizontal(|ui| {
-                    ui.add_sized([200.0, 22.0], egui::Label::new(RichText::new("Цвет").size(18.0)));
+                    ui.add_sized([200.0, 22.0], egui::Label::new(RichText::new(tr("Цвет")).size(18.0)));
                     ui.color_edit_button_rgba_unmultiplied(&mut c.color);
                 });
             }
             if def.image {
                 ui.horizontal(|ui| {
-                    if ui.button(RichText::new("Выбрать картинку частицы…").size(17.0)).clicked() {
+                    if ui.button(RichText::new(tr("Выбрать картинку частицы…")).size(17.0)).clicked() {
                         if let Some(p) = rfd::FileDialog::new().add_filter("Картинки", &["png", "jpg", "jpeg", "gif"]).pick_file() {
                             c.image = p.to_string_lossy().into_owned();
                         }
@@ -1322,15 +1303,15 @@ fn vfx_edit_dialog(app: &mut App, ctx: &Context, idx: usize) {
             }
             ui.add_space(16.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let ok = egui::Button::new(RichText::new("Готово").size(17.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(14, 150, 240)).rounding(3.0);
+                let ok = egui::Button::new(RichText::new(tr("Готово")).size(17.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(14, 150, 240)).rounding(3.0);
                 if ui.add_sized([150.0, 40.0], ok).clicked() {
                     done = true;
                 }
-                let bk = egui::Button::new(RichText::new("Назад").size(17.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(222, 88, 116)).rounding(3.0);
+                let bk = egui::Button::new(RichText::new(tr("Назад")).size(17.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(222, 88, 116)).rounding(3.0);
                 if ui.add_sized([150.0, 40.0], bk).clicked() {
                     back = true;
                 }
-                if ui.button(RichText::new("Сбросить").size(16.0)).clicked() {
+                if ui.button(RichText::new(tr("Сбросить")).size(16.0)).clicked() {
                     let on = c.on;
                     *c = crate::vfx::default_cfg(def);
                     c.on = on;
@@ -1364,11 +1345,11 @@ fn info_dialog(app: &mut App, ctx: &Context, id: u8) {
         let resp = egui::Frame::none().fill(Color32::WHITE).inner_margin(egui::Margin { left: 38.0, right: 38.0, top: 46.0, bottom: 18.0 }).show(ui, |ui| {
             ui.set_width(w - 76.0);
             if !title.is_empty() {
-                ui.label(RichText::new(title).size(32.0).color(Color32::from_rgb(236, 30, 160)));
+                ui.label(RichText::new(tr(title)).size(32.0).color(Color32::from_rgb(236, 30, 160)));
                 ui.add_space(6.0);
             }
             for p in &paras {
-                ui.add(egui::Label::new(RichText::new(*p).size(20.0).color(Color32::from_rgb(110, 110, 118))).wrap());
+                ui.add(egui::Label::new(RichText::new(tr(p)).size(20.0).color(Color32::from_rgb(110, 110, 118))).wrap());
                 ui.add_space(8.0);
             }
             ui.add_space(20.0);
@@ -1376,7 +1357,7 @@ fn info_dialog(app: &mut App, ctx: &Context, id: u8) {
                 let mut d = app.ui.info_dont_show;
                 ui.add_enabled_ui(id != INFO_VCAM, |ui| {
                     if id != INFO_VCAM {
-                        toggle(ui, &mut d, "Больше не показывать");
+                        toggle(ui, &mut d, tr("Больше не показывать"));
                     }
                 });
                 app.ui.info_dont_show = d;
@@ -1388,7 +1369,7 @@ fn info_dialog(app: &mut App, ctx: &Context, id: u8) {
                     ok = true;
                 }
                 if id == INFO_VCAM {
-                    let b = egui::Button::new(RichText::new("Открыть папку").size(18.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(14, 150, 240)).rounding(2.0);
+                    let b = egui::Button::new(RichText::new(tr("Открыть папку")).size(18.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(14, 150, 240)).rounding(2.0);
                     if ui.add_sized([170.0, 42.0], b).clicked() {
                         open_folder = true;
                     }
@@ -1432,13 +1413,13 @@ fn quality_label(model: i32) -> (&'static str, &'static str) {
     QUALITY.iter().find(|q| q.2 == model).map(|q| (q.0, q.1)).unwrap_or(("Уровень 4", ""))
 }
 
-struct Row {
-    bold: String,
-    text: String,
-    enabled: bool,
+pub(crate) struct Row {
+    pub bold: String,
+    pub text: String,
+    pub enabled: bool,
 }
 
-fn row(text: impl Into<String>) -> Row {
+pub(crate) fn row(text: impl Into<String>) -> Row {
     Row { bold: String::new(), text: text.into(), enabled: true }
 }
 
@@ -1453,9 +1434,14 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
         vfx_edit_dialog(app, ctx, i);
         return;
     }
+    if crate::ui_hotkeys::custom_modal(app, ctx, kind) {
+        return;
+    }
+    let hk_rows = crate::ui_hotkeys::modal_rows(app, kind);
     let mut fps_values: Vec<u32> = Vec::new();
     let mut formats: Vec<String> = Vec::new();
     let mut resolutions: Vec<(u32, u32)> = Vec::new();
+    let (prompt, rows): (String, Vec<Row>) = if let Some(x) = hk_rows { x } else {
     let (prompt, rows): (&str, Vec<Row>) = match kind {
         Modal::Camera => (
             "Выберите веб-камеру.",
@@ -1488,7 +1474,7 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
                     match kind {
                         Modal::Resolution => (
                             "Выберите разрешение. Чем выше, тем лучше. Для качественного отслеживания глаз, моргания и подмигивания рекомендуется разрешение около 1280x720 или выше.",
-                            if resolutions.is_empty() { vec![row("Камера не сообщила режимы — будут использованы настройки по умолчанию")] } else { resolutions.iter().map(|r| row(format!("{} x {}", r.0, r.1))).collect() },
+                            if resolutions.is_empty() { vec![row(tr("Камера не сообщила режимы — будут использованы настройки по умолчанию"))] } else { resolutions.iter().map(|r| row(format!("{} x {}", r.0, r.1))).collect() },
                         ),
                         Modal::Fps => ("Выберите FPS (частоту кадров) камеры. 15 FPS — хорошо, 30 — лучше.", fps_values.iter().map(|f| row(f.to_string())).collect()),
                         _ => (
@@ -1500,7 +1486,7 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
             }
         }
         Modal::Idle | Modal::LostIdle => {
-            let mut v = vec![row("Нет")];
+            let mut v = vec![row(tr("Нет"))];
             if let Some((_, m)) = &app.ui.motions_cache {
                 v.extend(m.iter().map(|f| row(f.clone())));
             }
@@ -1564,8 +1550,11 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
         }
         Modal::TrackType => (
             "Выберите тип отслеживания веб-камерой.",
-            vec![row("Только лицо"), row("Только руки"), row("Лицо и руки")],
+            vec![row(tr("Только лицо")), row(tr("Только руки")), row(tr("Лицо и руки"))],
         ),
+        _ => ("", Vec::new()),
+    };
+    (crate::i18n::tr(prompt).to_string(), rows)
     };
 
     let screen = ctx.screen_rect();
@@ -1582,7 +1571,7 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
         let frame = egui::Frame::none().fill(Color32::WHITE).rounding(6.0).inner_margin(egui::Margin { left: 26.0, right: 26.0, top: 46.0, bottom: 18.0 });
         let resp = frame.show(ui, |ui| {
             ui.set_width(w - 52.0);
-            ui.label(RichText::new(prompt).size(21.0).color(Color32::from_rgb(110, 110, 118)));
+            ui.label(RichText::new(&prompt).size(21.0).color(Color32::from_rgb(110, 110, 118)));
             ui.add_space(26.0);
             let f = app.ui.modal_filter.to_lowercase();
             let mut sa = egui::ScrollArea::vertical().id_salt("modal-list").max_height(400.0).min_scrolled_height(400.0).auto_shrink([false, false]);
@@ -1610,7 +1599,7 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
                         p.galley(Pos2::new(x + 0.6, rect.center().y - g.size().y / 2.0), g, col);
                         x += gw + 8.0;
                     }
-                    p.text(Pos2::new(x, rect.center().y), Align2::LEFT_CENTER, &r.text, FontId::proportional(20.0), col);
+                    p.text(Pos2::new(x, rect.center().y), Align2::LEFT_CENTER, tr(&r.text), FontId::proportional(20.0), col);
                     if resp.clicked() {
                         app.ui.modal_sel = Some(i);
                     }
@@ -1623,7 +1612,7 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
             ui.add_space(10.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let can = app.ui.modal_sel.map(|i| rows.get(i).map(|r| r.enabled).unwrap_or(false)).unwrap_or(false);
-                let ok = egui::Button::new(RichText::new("Выбрать").size(17.0).strong().color(Color32::WHITE))
+                let ok = egui::Button::new(RichText::new(tr("Выбрать")).size(17.0).strong().color(Color32::WHITE))
                     .fill(if can { Color32::from_rgb(14, 150, 240) } else { Color32::from_rgb(210, 212, 222) })
                     .rounding(3.0);
                 if ui.add_sized([170.0, 40.0], ok).clicked() && can {
@@ -1648,7 +1637,7 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
         egui::Frame::none().fill(Color32::WHITE).rounding(10.0).inner_margin(8.0).show(ui, |ui| {
             ui.set_width(w - 16.0);
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut app.ui.modal_filter).hint_text("Фильтр").font(FontId::proportional(20.0)).desired_width(w - 110.0));
+                ui.add(egui::TextEdit::singleline(&mut app.ui.modal_filter).hint_text(tr("Фильтр")).font(FontId::proportional(20.0)).desired_width(w - 110.0));
                 if ui.add(egui::Button::new(RichText::new("✖").size(20.0).color(Color32::from_rgb(240, 120, 130))).frame(false)).clicked() {
                     app.ui.modal_filter.clear();
                 }
@@ -1665,6 +1654,9 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
     let Some(i) = choose else { return };
     app.ui.modal_sel = None;
     app.ui.modal_filter.clear();
+    if crate::ui_hotkeys::modal_choose(app, kind, i) {
+        return;
+    }
     match kind {
         Modal::Camera => {
             if let Some(c) = app.cameras.get(i) {
@@ -1723,7 +1715,7 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
             }
             app.ui.modal = None;
         }
-        Modal::Info(_) | Modal::VfxEdit(_) => app.ui.modal = None,
+        Modal::Info(_) | Modal::VfxEdit(_) | Modal::HkAction(_) | Modal::HkFile(_) | Modal::HkGesture(..) | Modal::HkTwitch(_) | Modal::HkSound(_) | Modal::TwitchReward(_) | Modal::TwitchFeatures | Modal::TwitchDropper | Modal::TwitchChat | Modal::TwitchTriggersCfg => app.ui.modal = None,
         Modal::VfxList => {
             if i == 0 {
                 for c in &mut app.settings.vfx {
@@ -1794,18 +1786,18 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
 }
 
 /// Light-blue "selector" button followed by "↳ value" lines.
-fn picker(ui: &mut egui::Ui, label: &str, values: &[String], enabled: bool) -> egui::Response {
+pub(crate) fn picker(ui: &mut egui::Ui, label: &str, values: &[String], enabled: bool) -> egui::Response {
     let fill = if enabled { Color32::from_rgb(120, 190, 250) } else { Color32::from_rgb(200, 226, 250) };
-    let r = ui.add_enabled(enabled, egui::Button::new(RichText::new(label).size(17.0).color(Color32::WHITE)).fill(fill).rounding(14.0).min_size(Vec2::new(320.0, 34.0)));
+    let r = ui.add_enabled(enabled, egui::Button::new(RichText::new(tr(label)).size(17.0).color(Color32::WHITE)).fill(fill).rounding(14.0).min_size(Vec2::new(320.0, 34.0)));
     for (i, v) in values.iter().enumerate() {
         let prefix = if i == 0 { "   » " } else { "        " };
-        ui.label(RichText::new(format!("{prefix}{v}")).size(18.0).color(Color32::from_rgb(150, 150, 160)));
+        ui.label(RichText::new(format!("{prefix}{}", tr(v))).size(18.0).color(Color32::from_rgb(150, 150, 160)));
     }
     r
 }
 
 /// Pill slider with the value shown on a blue knob and Min/Max captions.
-fn pill_slider(ui: &mut egui::Ui, v: &mut f32, range: std::ops::RangeInclusive<f32>, left: &str, right: &str) -> egui::Response {
+pub(crate) fn pill_slider(ui: &mut egui::Ui, v: &mut f32, range: std::ops::RangeInclusive<f32>, left: &str, right: &str) -> egui::Response {
     let w = ui.available_width();
     let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(w, 32.0), Sense::click_and_drag());
     let (lo, hi) = (*range.start(), *range.end());
@@ -1853,7 +1845,7 @@ fn camera_preview(app: &mut App, ctx: &Context, e: f32) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let (r, resp) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
                     ui.painter().text(r.center(), Align2::CENTER_CENTER, "✖", FontId::proportional(28.0), Color32::from_rgb(240, 96, 96));
-                    if resp.on_hover_text("Скрыть превью").clicked() {
+                    if resp.on_hover_text(tr("Скрыть превью")).clicked() {
                         app.settings.show_cam_preview = false;
                     }
                 });
@@ -1922,7 +1914,7 @@ fn camera_preview(app: &mut App, ctx: &Context, e: f32) {
         card_frame().inner_margin(egui::Margin::same(8.0)).show(ui, |ui| {
             ui.set_width(454.0);
             ui.horizontal(|ui| {
-                let b = egui::Button::new(RichText::new("Калибровать").size(19.0).color(Color32::WHITE)).fill(BLUE).rounding(12.0);
+                let b = egui::Button::new(RichText::new(tr("Калибровать")).size(19.0).color(Color32::WHITE)).fill(BLUE).rounding(12.0);
                 if ui.add_sized([350.0, 46.0], b).clicked() {
                     app.actions.push(Action::Calibrate);
                 }
@@ -1934,7 +1926,7 @@ fn camera_preview(app: &mut App, ctx: &Context, e: f32) {
 }
 
 fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
-    section(ui, "Отслеживание камерой", |ui| {
+    section(ui, tr("Отслеживание камерой"), |ui| {
         let running = app.tracker.is_some();
         // Camera
         let cam_name = app.cameras.iter().find(|c| c.0 == app.settings.camera).map(|c| c.1.clone()).unwrap_or_else(|| format!("Камера #{}", app.settings.camera));
@@ -1942,25 +1934,25 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         if !app.settings.cam_format.is_empty() {
             vals.push(format!("- {}", app.settings.cam_format));
         }
-        if picker(ui, "Выбрать камеру", &vals, !running).clicked() {
+        if picker(ui, tr("Выбрать камеру"), &vals, !running).clicked() {
             app.actions.push(Action::RefreshCameras);
             app.ui.modal = Some(Modal::Camera);
             app.ui.modal_sel = None;
         }
         ui.add_space(4.0);
         let qlabel = if app.settings.track_backend == 1 { "[Google] Трекер Mediapipe".to_string() } else { quality_label(app.settings.track_quality).0.to_string() };
-        if picker(ui, "Качество отслеживания", &[qlabel], !running).clicked() {
+        if picker(ui, tr("Качество отслеживания"), &[qlabel], !running).clicked() {
             app.ui.modal = Some(Modal::Quality);
             app.ui.modal_sel = None;
         }
         ui.add_space(4.0);
         let tlabel = ["Только лицо", "Только руки", "Лицо и руки"][app.settings.track_type.min(2) as usize].to_string();
-        if picker(ui, "Тип отслеживания", &[tlabel], !running).clicked() {
+        if picker(ui, tr("Тип отслеживания"), &[tlabel], !running).clicked() {
             app.ui.modal = Some(Modal::TrackType);
             app.ui.modal_sel = None;
         }
         ui.add_space(8.0);
-        ui.label(RichText::new("Ограничение FPS веб-камеры").size(20.0).color(if running { Color32::GRAY } else { TEXT }));
+        ui.label(RichText::new(tr("Ограничение FPS веб-камеры")).size(20.0).color(if running { Color32::GRAY } else { TEXT }));
         let mut fps = app.settings.cam_fps as f32;
         ui.add_enabled_ui(!running, |ui| {
             if pill_slider(ui, &mut fps, 10.0..=100.0, "10 FPS", "").changed() {
@@ -1968,14 +1960,14 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             }
         });
         ui.add_space(16.0);
-        toggle(ui, &mut app.settings.track_autostart, "Автозапуск камеры при старте");
+        toggle(ui, &mut app.settings.track_autostart, tr("Автозапуск камеры при старте"));
         ui.horizontal(|ui| {
             let w = (ui.available_width() - 12.0) / 2.0;
-            let on = egui::Button::new(RichText::new("Включить камеру").size(17.0).color(Color32::WHITE)).fill(if running { Color32::from_rgb(200, 226, 250) } else { BLUE }).rounding(14.0);
+            let on = egui::Button::new(RichText::new(tr("Включить камеру")).size(17.0).color(Color32::WHITE)).fill(if running { Color32::from_rgb(200, 226, 250) } else { BLUE }).rounding(14.0);
             if ui.add_sized([w, 36.0], on).clicked() {
                 app.actions.push(Action::StartTracker);
             }
-            let off = egui::Button::new(RichText::new("Выключить камеру").size(17.0).color(Color32::WHITE)).fill(if running { BLUE } else { Color32::from_rgb(200, 226, 250) }).rounding(14.0);
+            let off = egui::Button::new(RichText::new(tr("Выключить камеру")).size(17.0).color(Color32::WHITE)).fill(if running { BLUE } else { Color32::from_rgb(200, 226, 250) }).rounding(14.0);
             if ui.add_sized([w, 36.0], off).clicked() {
                 app.actions.push(Action::StopTracker);
             }
@@ -1987,29 +1979,29 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             (None, None) => "камера выключена".into(),
         };
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("Статус:").size(18.0).strong());
+            ui.label(RichText::new(tr("Статус:")).size(18.0).strong());
             ui.label(RichText::new(status).size(18.0));
         });
-        if !app.settings.show_cam_preview && ui.button("Показать превью трекинга").clicked() {
+        if !app.settings.show_cam_preview && ui.button(tr("Показать превью трекинга")).clicked() {
             app.settings.show_cam_preview = true;
         }
     });
 
-    section(ui, "Настройки отслеживания", |ui| {
-        ui.label(RichText::new("Модель при потере отслеживания").size(20.0));
-        ui.radio_value(&mut app.settings.lost_reset, false, RichText::new("Остаётся в текущей позе").size(17.0));
-        ui.radio_value(&mut app.settings.lost_reset, true, RichText::new("Возвращается в исходную позу").size(17.0));
+    section(ui, tr("Настройки отслеживания"), |ui| {
+        ui.label(RichText::new(tr("Модель при потере отслеживания")).size(20.0));
+        ui.radio_value(&mut app.settings.lost_reset, false, RichText::new(tr("Остаётся в текущей позе")).size(17.0));
+        ui.radio_value(&mut app.settings.lost_reset, true, RichText::new(tr("Возвращается в исходную позу")).size(17.0));
         ui.add_space(8.0);
         let t = &mut app.settings.track;
-        ui.label(RichText::new("Синхронизация моргания").size(20.0));
-        ui.radio_value(&mut t.blink_sync, 0, RichText::new("Никогда").size(17.0));
-        ui.radio_value(&mut t.blink_sync, 1, RichText::new("Всегда").size(17.0));
-        ui.radio_value(&mut t.blink_sync, 2, RichText::new("При повороте головы").size(17.0));
+        ui.label(RichText::new(tr("Синхронизация моргания")).size(20.0));
+        ui.radio_value(&mut t.blink_sync, 0, RichText::new(tr("Никогда")).size(17.0));
+        ui.radio_value(&mut t.blink_sync, 1, RichText::new(tr("Всегда")).size(17.0));
+        ui.radio_value(&mut t.blink_sync, 2, RichText::new(tr("При повороте головы")).size(17.0));
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Чувствительность моргания").size(17.0));
+            ui.label(RichText::new(tr("Чувствительность моргания")).size(17.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new(RichText::new("   Сброс   ").size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(14.0)).clicked() {
+                if ui.add(egui::Button::new(RichText::new(tr("   Сброс   ")).size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(14.0)).clicked() {
                     t.sens = [50.0; 5];
                 }
             });
@@ -2021,14 +2013,14 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             pill_slider(ui, &mut t.sens[i], 0.0..=100.0, "Min", "Max");
         }
         ui.add_space(10.0);
-        ui.label(RichText::new("Направления осей").size(20.0));
-        toggle(ui, &mut t.mirror, "Зеркальный режим (как в зеркале)");
-        toggle(ui, &mut t.invert[0], "Инвертировать поворот головы");
-        toggle(ui, &mut t.invert[1], "Инвертировать наклон вверх/вниз");
-        toggle(ui, &mut t.invert[2], "Инвертировать наклон вбок");
-        toggle(ui, &mut t.invert_gaze[0], "Инвертировать взгляд по X");
-        toggle(ui, &mut t.invert_gaze[1], "Инвертировать взгляд по Y");
-        egui::CollapsingHeader::new("Текущие значения трекинга").show(ui, |ui| {
+        ui.label(RichText::new(tr("Направления осей")).size(20.0));
+        toggle(ui, &mut t.mirror, tr("Зеркальный режим (как в зеркале)"));
+        toggle(ui, &mut t.invert[0], tr("Инвертировать поворот головы"));
+        toggle(ui, &mut t.invert[1], tr("Инвертировать наклон вверх/вниз"));
+        toggle(ui, &mut t.invert[2], tr("Инвертировать наклон вбок"));
+        toggle(ui, &mut t.invert_gaze[0], tr("Инвертировать взгляд по X"));
+        toggle(ui, &mut t.invert_gaze[1], tr("Инвертировать взгляд по Y"));
+        egui::CollapsingHeader::new(tr("Текущие значения трекинга")).show(ui, |ui| {
             for (i, n) in INPUT_NAMES.iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.add_sized([150.0, 16.0], egui::Label::new(*n));
@@ -2038,17 +2030,17 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         });
     });
 
-    section(ui, "Трекер глаз Tobii", |ui| {
+    section(ui, tr("Трекер глаз Tobii"), |ui| {
         let mut on = app.settings.tobii_enabled;
-        if toggle(ui, &mut on, "Активировать Tobii Eye Tracker").changed() {
+        if toggle(ui, &mut on, tr("Активировать Tobii Eye Tracker")).changed() {
             app.actions.push(Action::SetTobii(on));
         }
         ui.add_enabled_ui(on, |ui| {
-            toggle(ui, &mut app.settings.tobii_replace_head, "Заменить на отслеживание головы Tobii").on_hover_text("Углы и положение головы берутся из Tobii вместо камеры");
-            toggle(ui, &mut app.settings.tobii_replace_eyes, "Заменить на отслеживание глаз Tobii").on_hover_text("Направление взгляда берётся из точки взгляда на экране");
-            toggle(ui, &mut app.settings.tobii_show_gaze, "Отображать точку взгляда");
+            toggle(ui, &mut app.settings.tobii_replace_head, tr("Заменить на отслеживание головы Tobii")).on_hover_text(tr("Углы и положение головы берутся из Tobii вместо камеры"));
+            toggle(ui, &mut app.settings.tobii_replace_eyes, tr("Заменить на отслеживание глаз Tobii")).on_hover_text(tr("Направление взгляда берётся из точки взгляда на экране"));
+            toggle(ui, &mut app.settings.tobii_show_gaze, tr("Отображать точку взгляда"));
             ui.add_space(4.0);
-            if ui.add_sized([320.0, 34.0], egui::Button::new(RichText::new("Калибровать").size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(6.0)).on_hover_text("Смотрите в центр экрана прямо и нажмите").clicked() {
+            if ui.add_sized([320.0, 34.0], egui::Button::new(RichText::new(tr("Калибровать")).size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(6.0)).on_hover_text(tr("Смотрите в центр экрана прямо и нажмите")).clicked() {
                 app.actions.push(Action::CalibrateTobii);
             }
         });
@@ -2056,7 +2048,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         let st = &app.tobii_state;
         ui.horizontal(|ui| {
             status_dot(ui, if st.connected { Color32::from_rgb(90, 200, 110) } else { Color32::GRAY });
-            ui.label(RichText::new("Статус:").size(18.0).strong());
+            ui.label(RichText::new(tr("Статус:")).size(18.0).strong());
         });
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(Vec2::new(96.0, 60.0), Sense::hover());
@@ -2073,8 +2065,8 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         });
     });
 
-    section(ui, "Качество и эффекты", |ui| {
-        ui.label(RichText::new("Частота кадров приложения").size(20.0));
+    section(ui, tr("Качество и эффекты"), |ui| {
+        ui.label(RichText::new(tr("Частота кадров приложения")).size(20.0));
         let before = app.settings.fps;
         for m in FpsMode::ALL {
             ui.radio_value(&mut app.settings.fps, m, RichText::new(m.label()).size(17.0));
@@ -2091,14 +2083,14 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             ui.add(egui::DragValue::new(&mut ws[0]).range(320..=7680));
             ui.label("X");
             ui.add(egui::DragValue::new(&mut ws[1]).range(240..=4320));
-            if ui.add(egui::Button::new(RichText::new("Установить разрешение").size(16.0).color(Color32::WHITE)).fill(BLUE).rounding(14.0)).clicked() {
+            if ui.add(egui::Button::new(RichText::new(tr("Установить разрешение")).size(16.0).color(Color32::WHITE)).fill(BLUE).rounding(14.0)).clicked() {
                 let _ = app.window.request_inner_size(winit::dpi::PhysicalSize::new(ws[0], ws[1]));
             }
         });
         ui.add_space(10.0);
-        ui.label(RichText::new("Настройки маски Live2D").size(22.0));
-        toggle(ui, &mut app.settings.smooth_masks, "Сглаженные маски Live2D").on_hover_text("Выкл.: жёсткие маски через stencil (0 МБ видеопамяти). Вкл.: мягкие края через текстуру масок.");
-        if blue_button(ui, "Настроить", BLUE, 38.0).clicked() {
+        ui.label(RichText::new(tr("Настройки маски Live2D")).size(22.0));
+        toggle(ui, &mut app.settings.smooth_masks, tr("Сглаженные маски Live2D")).on_hover_text(tr("Выкл.: жёсткие маски через stencil (0 МБ видеопамяти). Вкл.: мягкие края через текстуру масок."));
+        if blue_button(ui, tr("Настроить"), BLUE, 38.0).clicked() {
             open_info(app, INFO_MASKS, Some(Modal::MaskRes));
         }
         let (s, m) = (app.settings.mask_atlas, app.settings.mask_max);
@@ -2107,28 +2099,28 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.label(RichText::new(format!("{s} x {s}")).color(pink));
-            ui.label(" пикселей (макс. ");
+            ui.label(tr(" пикселей (макс. "));
             ui.label(RichText::new(format!("{m} масок")).color(pink));
             ui.label(")");
         });
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.label(RichText::new(format!("{c} x {c}")).color(pink));
-            ui.label(" пикселей на маску");
+            ui.label(tr(" пикселей на маску"));
         });
         if app.settings.smooth_masks {
             ui.label(RichText::new(format!("Сейчас используется масок: {} · видеопамять атласа {} МБ", app.stats.masks, (s as u64 * s as u64 * 4) >> 20)).small().weak());
         }
     });
 
-    section(ui, "Визуальные эффекты (VFX)", |ui| {
+    section(ui, tr("Визуальные эффекты (VFX)"), |ui| {
         let n = app.settings.vfx.iter().filter(|c| c.on).count();
         ui.horizontal(|ui| {
             if ui.add(egui::Button::new(RichText::new("?").size(18.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(60, 60, 66)).rounding(14.0)).clicked() {
                 app.settings.dismissed_info.retain(|d| *d != INFO_VFX_ALPHA && *d != INFO_VFX_ARTISTS);
                 open_info(app, INFO_VFX_ALPHA, None);
             }
-            toggle(ui, &mut app.settings.vfx_on, "Активировать");
+            toggle(ui, &mut app.settings.vfx_on, tr("Активировать"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let st = if app.settings.vfx_on && n > 0 { "Вкл." } else { "Выкл." };
                 ui.label(RichText::new(st).size(18.0).color(Color32::GRAY));
@@ -2140,7 +2132,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Пресеты").size(19.0));
+            ui.label(RichText::new(tr("Пресеты")).size(19.0));
             ui.add_space(10.0);
             let btn = |ui: &mut egui::Ui, icon: &str, tip: &str| {
                 ui.add_sized([62.0, 40.0], egui::Button::new(RichText::new(icon).size(20.0).color(Color32::WHITE)).fill(BLUE).rounding(10.0)).on_hover_text(tip).clicked()
@@ -2164,9 +2156,9 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         });
         if app.ui.vfx_save_open {
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut app.ui.vfx_preset_name).hint_text("Название пресета").desired_width(300.0));
+                ui.add(egui::TextEdit::singleline(&mut app.ui.vfx_preset_name).hint_text(tr("Название пресета")).desired_width(300.0));
                 let name = app.ui.vfx_preset_name.trim().replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-                if ui.add_enabled(!name.is_empty(), egui::Button::new("Сохранить")).clicked() {
+                if ui.add_enabled(!name.is_empty(), egui::Button::new(tr("Сохранить"))).clicked() {
                     let d = app.paths.data.join("vfx_presets");
                     let _ = std::fs::create_dir_all(&d);
                     if let Ok(s) = serde_json::to_vec_pretty(&app.settings.vfx) {
@@ -2179,11 +2171,11 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             });
         }
     });
-    section(ui, "Наложение освещения", |ui| {
-        ui.label(RichText::new("Экран").size(19.0));
+    section(ui, tr("Наложение освещения"), |ui| {
+        ui.label(RichText::new(tr("Экран")).size(19.0));
         let mode = app.settings.light_mode;
         ui.horizontal(|ui| {
-            let off = egui::Button::new(RichText::new("Выкл.").size(17.0).color(Color32::WHITE)).fill(if mode == 0 { BLUE } else { Color32::from_rgb(150, 200, 245) }).rounding(14.0);
+            let off = egui::Button::new(RichText::new(tr("Выкл.")).size(17.0).color(Color32::WHITE)).fill(if mode == 0 { BLUE } else { Color32::from_rgb(150, 200, 245) }).rounding(14.0);
             if ui.add_sized([96.0, 34.0], off).clicked() {
                 app.actions.push(Action::SetLight(0, 0));
             }
@@ -2197,7 +2189,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
             let mut c = app.settings.light_color;
-            let r = ui.color_edit_button_rgb(&mut c).on_hover_text("Свой цвет освещения");
+            let r = ui.color_edit_button_rgb(&mut c).on_hover_text(tr("Свой цвет освещения"));
             if r.changed() || (r.clicked() && mode != 3) {
                 app.settings.light_color = c;
                 if mode != 3 {
@@ -2213,12 +2205,12 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         }
         ui.add_space(8.0);
         ui.columns(2, |c| {
-            c[0].label(RichText::new("Настройка цвета").size(19.0));
-            c[0].label(RichText::new("Яркость").size(17.0));
+            c[0].label(RichText::new(tr("Настройка цвета")).size(19.0));
+            c[0].label(RichText::new(tr("Яркость")).size(17.0));
             pill_knob(&mut c[0], &mut app.settings.light_brightness, 0.0..=100.0, "Min", "Max", "");
-            c[0].label(RichText::new("Наложение").size(17.0));
+            c[0].label(RichText::new(tr("Наложение")).size(17.0));
             pill_knob(&mut c[0], &mut app.settings.light_overlay, 0.0..=100.0, "Min", "Max", "");
-            c[0].label(RichText::new("Сглаживание").size(17.0));
+            c[0].label(RichText::new(tr("Сглаживание")).size(17.0));
             pill_knob(&mut c[0], &mut app.settings.light_smoothing, 0.0..=100.0, "", "Max", "");
             // Live capture preview.
             let ui = &mut c[1];
@@ -2246,16 +2238,16 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             }
             let t = app.light_tint;
             ui.horizontal(|ui| {
-                ui.label("Итоговый цвет:");
+                ui.label(tr("Итоговый цвет:"));
                 let (sw, _) = ui.allocate_exact_size(Vec2::new(40.0, 18.0), Sense::hover());
                 ui.painter().rect_filled(sw, 3.0, Color32::from_rgb((t[0].min(1.0) * 255.0) as u8, (t[1].min(1.0) * 255.0) as u8, (t[2].min(1.0) * 255.0) as u8));
             });
         });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            toggle(ui, &mut app.settings.light_items, "Наложение\nна элементы");
+            toggle(ui, &mut app.settings.light_items, tr("Наложение\nна элементы"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new(RichText::new("   Сброс   ").size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(14.0)).clicked() {
+                if ui.add(egui::Button::new(RichText::new(tr("   Сброс   ")).size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(14.0)).clicked() {
                     app.settings.light_brightness = 37.0;
                     app.settings.light_overlay = 40.0;
                     app.settings.light_smoothing = 3.0;
@@ -2267,16 +2259,16 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         }
     });
 
-    section(ui, "Настройка виртуальной камеры", |ui| {
-        if blue_button(ui, "Помощь с установкой", BLUE, 36.0).clicked() {
+    section(ui, tr("Настройка виртуальной камеры"), |ui| {
+        if blue_button(ui, tr("Помощь с установкой"), BLUE, 36.0).clicked() {
             open_info(app, INFO_VCAM, None);
         }
         let installed = crate::vcam::installed();
         let mut on = app.settings.vcam_on;
-        if toggle(ui, &mut on, "Включить виртуальную камеру").changed() {
+        if toggle(ui, &mut on, tr("Включить виртуальную камеру")).changed() {
             app.actions.push(Action::SetVcam(on));
         }
-        if toggle(ui, &mut app.settings.vcam_mirror, "Отзеркалить видео  ").changed() {
+        if toggle(ui, &mut app.settings.vcam_mirror, tr("Отзеркалить видео  ")).changed() {
             if let Some(v) = &app.vcam {
                 v.set_mirror(&app.gpu, app.settings.vcam_mirror);
             }
@@ -2289,23 +2281,23 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             (None, None, true) => ("Установлена, выключена".to_string(), Color32::GRAY),
         };
         ui.add(egui::Label::new(RichText::new(txt).color(col)).wrap());
-        ui.label(RichText::new("1280×720, 30 FPS, с фоном и эффектами").small().weak());
+        ui.label(RichText::new(tr("1280×720, 30 FPS, с фоном и эффектами")).small().weak());
         ui.add_space(10.0);
-        ui.label(RichText::new("Настройки Spout2").size(22.0));
-        if blue_button(ui, "Установить Spout2", BLUE, 36.0).on_hover_text("Spout2 нужен программе-получателю (например, плагин OBS Spout2)").clicked() {
+        ui.label(RichText::new(tr("Настройки Spout2")).size(22.0));
+        if blue_button(ui, tr("Установить Spout2"), BLUE, 36.0).on_hover_text(tr("Spout2 нужен программе-получателю (например, плагин OBS Spout2)")).clicked() {
             app.actions.push(Action::OpenUrl("https://spout.zeal.co/".into()));
         }
         let mut on = app.settings.spout;
-        if toggle(ui, &mut on, "Активировать Spout2").changed() {
+        if toggle(ui, &mut on, tr("Активировать Spout2")).changed() {
             app.actions.push(Action::SetSpout(on));
         }
-        if toggle(ui, &mut app.settings.spout_mirror, "Отзеркалить видео").changed() {
+        if toggle(ui, &mut app.settings.spout_mirror, tr("Отзеркалить видео")).changed() {
             if let Some(s) = &app.spout {
                 s.set_mirror(&app.gpu, app.settings.spout_mirror);
             }
         }
         ui.horizontal(|ui| {
-            ui.label("Имя отправителя");
+            ui.label(tr("Имя отправителя"));
             if ui.text_edit_singleline(&mut app.settings.spout_name).lost_focus() && app.settings.spout {
                 app.actions.push(Action::SetSpout(true));
             }
@@ -2318,26 +2310,26 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             ui.colored_label(Color32::RED, e);
         }
         ui.add_space(10.0);
-        ui.label(RichText::new("Протокол NDI").size(22.0));
+        ui.label(RichText::new(tr("Протокол NDI")).size(22.0));
         ui.horizontal(|ui| {
-            if ui.add(egui::Button::new(RichText::new("   Подробнее   ").size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(14.0)).clicked() {
+            if ui.add(egui::Button::new(RichText::new(tr("   Подробнее   ")).size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(14.0)).clicked() {
                 app.actions.push(Action::OpenUrl("https://ndi.video/tools/".into()));
             }
             if !crate::ndi::runtime_installed() {
-                ui.label(RichText::new("NDI Runtime не найден — установите NDI Tools").color(Color32::from_rgb(220, 120, 0)));
+                ui.label(RichText::new(tr("NDI Runtime не найден — установите NDI Tools")).color(Color32::from_rgb(220, 120, 0)));
             }
         });
         let mut on = app.settings.ndi;
-        if toggle(ui, &mut on, "Активировать NDI").changed() {
+        if toggle(ui, &mut on, tr("Активировать NDI")).changed() {
             app.actions.push(Action::SetNdi(on));
         }
-        if toggle(ui, &mut app.settings.ndi_mirror, "Отзеркалить видео ").changed() {
+        if toggle(ui, &mut app.settings.ndi_mirror, tr("Отзеркалить видео ")).changed() {
             if let Some(s) = &app.ndi {
                 s.set_mirror(&app.gpu, app.settings.ndi_mirror);
             }
         }
         ui.horizontal(|ui| {
-            let ch = toggle(ui, &mut app.settings.ndi_custom_size, "Разрешение NDI").changed();
+            let ch = toggle(ui, &mut app.settings.ndi_custom_size, tr("Разрешение NDI")).changed();
             let a = ui.add(egui::DragValue::new(&mut app.settings.ndi_size[0]).range(16..=7680));
             ui.label("X");
             let b = ui.add(egui::DragValue::new(&mut app.settings.ndi_size[1]).range(16..=4320));
@@ -2346,7 +2338,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             }
         });
         ui.horizontal(|ui| {
-            ui.label("Имя источника");
+            ui.label(tr("Имя источника"));
             if ui.text_edit_singleline(&mut app.settings.ndi_name).lost_focus() && app.settings.ndi {
                 app.actions.push(Action::SetNdi(true));
             }
@@ -2360,7 +2352,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         }
     });
 
-    section(ui, "Запись анимации Live2D", |ui| {
+    section(ui, tr("Запись анимации Live2D"), |ui| {
         let rec = app.recorder.is_some();
         {
             let c = Pos2::new(ui.max_rect().right() - 18.0, ui.min_rect().top() + 16.0);
@@ -2369,10 +2361,10 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             ui.painter().circle_stroke(c, 16.0, Stroke::new(1.0, Color32::from_rgb(190, 190, 196)));
         }
         ui.add_enabled_ui(!rec, |ui| {
-            toggle(ui, &mut app.settings.rec_physics, "Запись параметров физики");
-            toggle(ui, &mut app.settings.rec_unchanged, "Запись неизменённых параметров");
+            toggle(ui, &mut app.settings.rec_physics, tr("Запись параметров физики"));
+            toggle(ui, &mut app.settings.rec_unchanged, tr("Запись неизменённых параметров"));
             ui.add_space(6.0);
-            ui.label(RichText::new("Длительность записи").size(18.0));
+            ui.label(RichText::new(tr("Длительность записи")).size(18.0));
             pill_knob(ui, &mut app.settings.rec_seconds, 2.0..=60.0, "2s", "60s", "");
         });
         ui.add_space(8.0);
@@ -2384,7 +2376,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         let status = if rec { "Идёт запись… Двигайтесь перед камерой.".to_string() } else { app.rec_status.clone() };
         ui.label(RichText::new(status).size(17.0));
         if let (false, Some(p)) = (rec, &app.rec_last) {
-            if ui.button("📁 Открыть папку с записями").clicked() {
+            if ui.button(tr("📁 Открыть папку с записями")).clicked() {
                 if let Some(d) = p.parent() {
                     let _ = std::process::Command::new("explorer").arg(d).spawn();
                 }
@@ -2491,8 +2483,8 @@ fn io_diagram(ui: &mut egui::Ui, r: &mut Rule, in_val: f32, out_val: Option<f32>
 fn model_tab(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let Some(key) = app.model_key() else {
-        section(ui, "Модель не загружена", |ui| {
-            ui.label("Откройте ленту моделей кнопкой 👤 на левой панели и выберите модель.");
+        section(ui, tr("Модель не загружена"), |ui| {
+            ui.label(tr("Откройте ленту моделей кнопкой 👤 на левой панели и выберите модель."));
         });
         return;
     };
@@ -2531,9 +2523,9 @@ fn model_tab(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
             });
-            ui.label(RichText::new("Модель Live2D:").size(21.0).strong());
+            ui.label(RichText::new(tr("Модель Live2D:")).size(21.0).strong());
             ui.label(RichText::new(format!("    {}", av.model3.file_name().unwrap_or_default().to_string_lossy())).size(19.0).color(Color32::GRAY));
-            ui.label(RichText::new("Конфиг модели (.vtube.json):").size(21.0).strong());
+            ui.label(RichText::new(tr("Конфиг модели (.vtube.json):")).size(21.0).strong());
             let vt = entry.as_ref().and_then(|e| e.vtube.as_ref()).map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned()).unwrap_or_else(|| "нет — используются стандартные настройки".into());
             ui.label(RichText::new(format!("    {vt}")).size(19.0).color(Color32::GRAY));
             ui.add_space(8.0);
@@ -2548,67 +2540,67 @@ fn model_tab(app: &mut App, ui: &mut egui::Ui) {
             ui.add_space(6.0);
             ui.add_enabled_ui(false, |ui| {
                 let mut on = true;
-                toggle(ui, &mut on, "Не публиковать в Мастерской");
+                toggle(ui, &mut on, tr("Не публиковать в Мастерской"));
             });
-            toggle(ui, &mut av.cfg.save_expressions, "Сохранять активные выражения").on_hover_text("Включённые выражения восстановятся при следующей загрузке модели");
+            toggle(ui, &mut av.cfg.save_expressions, tr("Сохранять активные выражения")).on_hover_text(tr("Включённые выражения восстановятся при следующей загрузке модели"));
             ui.add_space(10.0);
-            if blue_button(ui, "АВТОНАСТРОЙКА  🚀", BLUE, 56.0).on_hover_text("Пересобрать маппинг по стандартным параметрам модели").clicked() {
+            if blue_button(ui, tr("АВТОНАСТРОЙКА  🚀"), BLUE, 56.0).on_hover_text(tr("Пересобрать маппинг по стандартным параметрам модели")).clicked() {
                 autosetup = true;
             }
         });
         section(ui, "", |ui| {
             ui.add_enabled_ui(false, |ui| {
-                blue_button(ui, "ИСПРАВИТЬ БЕЛЫЕ КОНТУРЫ", BLUE, 44.0);
+                blue_button(ui, tr("ИСПРАВИТЬ БЕЛЫЕ КОНТУРЫ"), BLUE, 44.0);
             });
-            ui.label(RichText::new("Не требуется: текстуры премультиплицируются при загрузке, белых краёв нет.").small().weak());
+            ui.label(RichText::new(tr("Не требуется: текстуры премультиплицируются при загрузке, белых краёв нет.")).small().weak());
         });
         section(ui, "", |ui| {
             soon_badge(ui);
             ui.add_enabled_ui(false, |ui| {
-                blue_button(ui, "ОТПРАВИТЬ МОДЕЛЬ НА ТЕЛЕФОН", BLUE, 44.0);
+                blue_button(ui, tr("ОТПРАВИТЬ МОДЕЛЬ НА ТЕЛЕФОН"), BLUE, 44.0);
             });
         });
-        section(ui, "Громкость модели", |ui| {
+        section(ui, tr("Громкость модели"), |ui| {
             soon_badge(ui);
             ui.add_enabled_ui(false, |ui| {
                 let mut v = 90.0;
                 pill_knob(ui, &mut v, 0.0..=100.0, "0", "100", "🔊");
             });
         });
-        section(ui, "Настройка движения", |ui| {
-            toggle(ui, &mut av.cfg.move_enabled, "Активировать").on_hover_text("Модель смещается и приближается вслед за положением головы перед камерой");
+        section(ui, tr("Настройка движения"), |ui| {
+            toggle(ui, &mut av.cfg.move_enabled, tr("Активировать")).on_hover_text(tr("Модель смещается и приближается вслед за положением головы перед камерой"));
             ui.add_enabled_ui(av.cfg.move_enabled, |ui| {
                 for (i, n) in ["X", "Y", "Z"].iter().enumerate() {
                     pill_knob(ui, &mut av.cfg.move_xyz[i], -20.0..=20.0, "-20", "20", n);
                 }
             });
         });
-        section(ui, "Настройки физики", |ui| {
+        section(ui, tr("Настройки физики"), |ui| {
             if !av.has_physics() {
-                ui.label(RichText::new("У модели нет файла физики (physics3.json)").weak());
+                ui.label(RichText::new(tr("У модели нет файла физики (physics3.json)")).weak());
             }
-            toggle(ui, &mut av.cfg.physics_on, "Использовать физику");
-            toggle(ui, &mut app.settings.physics, "Физика для всех моделей и предметов");
+            toggle(ui, &mut av.cfg.physics_on, tr("Использовать физику"));
+            toggle(ui, &mut app.settings.physics, tr("Физика для всех моделей и предметов"));
             ui.add_enabled_ui(false, |ui| {
                 let mut off = false;
-                toggle(ui, &mut off, "Старая система физики");
+                toggle(ui, &mut off, tr("Старая система физики"));
             });
             ui.add_space(6.0);
-            ui.label(RichText::new("Частота кадров физики Live2D").size(20.0));
+            ui.label(RichText::new(tr("Частота кадров физики Live2D")).size(20.0));
             for (v, l) in [(0, "Как в файле модели"), (30, "30 FPS"), (60, "60 FPS"), (120, "120 FPS"), (1, "Соответствует FPS приложения")] {
                 ui.radio_value(&mut av.cfg.physics_fps, v, RichText::new(l).size(17.0));
             }
             ui.add_space(6.0);
-            ui.label(RichText::new("Сила физики").size(20.0));
+            ui.label(RichText::new(tr("Сила физики")).size(20.0));
             pill_knob(ui, &mut av.cfg.physics_strength, 0.0..=100.0, "Min", "Max", "");
-            ui.label(RichText::new("Физика перетаскивания").size(20.0).color(Color32::GRAY));
+            ui.label(RichText::new(tr("Физика перетаскивания")).size(20.0).color(Color32::GRAY));
             ui.add_enabled_ui(false, |ui| {
                 let mut v = 0.0;
                 pill_knob(ui, &mut v, 0.0..=100.0, "", "Max", "");
             });
         });
         if !av.expressions.is_empty() {
-            section(ui, "Выражения (exp3)", |ui| {
+            section(ui, tr("Выражения (exp3)"), |ui| {
                 for e in &mut av.expressions {
                     toggle(ui, &mut e.active, &e.name);
                 }
@@ -2633,7 +2625,7 @@ fn model_tab(app: &mut App, ui: &mut egui::Ui) {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut r.name).font(FontId::proportional(20.0)).desired_width(ui.available_width() - 110.0));
-                    if ui.add(egui::Button::new(RichText::new("🗑").size(22.0).color(Color32::from_rgb(230, 70, 70))).frame(false)).on_hover_text("Удалить").clicked() {
+                    if ui.add(egui::Button::new(RichText::new("🗑").size(22.0).color(Color32::from_rgb(230, 70, 70))).frame(false)).on_hover_text(tr("Удалить")).clicked() {
                         remove = Some(i);
                     }
                     let (cr, cresp) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::click());
@@ -2664,8 +2656,8 @@ fn model_tab(app: &mut App, ui: &mut egui::Ui) {
                 });
                 ui.add_space(6.0);
                 changed |= pill_knob(ui, &mut r.smoothing, 0.0..=100.0, "Min", "Max", "Сглаживание").changed();
-                changed |= toggle(ui, &mut r.auto_blink, "Автоматическое моргание").changed();
-                changed |= toggle(ui, &mut r.auto_breath, "Автоматическое дыхание").changed();
+                changed |= toggle(ui, &mut r.auto_blink, tr("Автоматическое моргание")).changed();
+                changed |= toggle(ui, &mut r.auto_breath, tr("Автоматическое дыхание")).changed();
                 changed |= io_diagram(ui, r, in_val, out_val, prange);
             });
             ui.add_space(14.0);
@@ -2711,66 +2703,6 @@ fn model_tab(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-fn hotkeys_tab(app: &mut App, ui: &mut egui::Ui) {
-    section(ui, "Настройки горячих клавиш", |ui| {
-        toggle(ui, &mut app.settings.hotkeys_enabled, "Горячие клавиши клавиатуры (когда окно активно)");
-    });
-    let expressions: Vec<String> = app.avatar.as_ref().map(|a| a.expressions.iter().map(|e| e.file.clone()).collect()).unwrap_or_default();
-    let scenes: Vec<String> = app.settings.item_scenes.iter().map(|s| s.name.clone()).collect();
-    let mut remove = None;
-    for (i, hk) in app.settings.hotkeys.iter_mut().enumerate() {
-        egui::Frame::group(ui.style()).rounding(10.0).inner_margin(8.0).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                toggle(ui, &mut hk.enabled, "");
-                ui.add(egui::TextEdit::singleline(&mut hk.name).hint_text("Имя горячей клавиши").desired_width(220.0));
-                if ui.button("🗑").clicked() {
-                    remove = Some(i);
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Действие");
-                egui::ComboBox::from_id_salt(("act", i)).selected_text(hk.action.label()).width(240.0).show_ui(ui, |ui| {
-                    for e in &expressions {
-                        ui.selectable_value(&mut hk.action, HotkeyAction::ToggleExpression(e.clone()), format!("Вкл./выкл. выражение: {e}"));
-                    }
-                    for s in &scenes {
-                        ui.selectable_value(&mut hk.action, HotkeyAction::LoadItemScene(s.clone()), format!("Загрузить сцену: {s}"));
-                    }
-                    for a in [HotkeyAction::ResetExpressions, HotkeyAction::ClearItems, HotkeyAction::Calibrate, HotkeyAction::Screenshot, HotkeyAction::ToggleUi] {
-                        let l = a.label();
-                        ui.selectable_value(&mut hk.action, a, l);
-                    }
-                });
-            });
-            ui.horizontal(|ui| {
-                ui.label("Клавиша");
-                let rec = app.ui.recording == Some(i);
-                let text = if rec { "Нажмите клавишу… (Esc — сброс)".to_string() } else { hk.combo() };
-                if ui.add(egui::Button::new(text).selected(rec)).clicked() {
-                    app.ui.recording = if rec { None } else { Some(i) };
-                }
-            });
-        });
-        ui.add_space(6.0);
-    }
-    if let Some(i) = remove {
-        app.settings.hotkeys.remove(i);
-        app.ui.recording = None;
-    }
-    if ui.button("+ Добавить горячую клавишу").clicked() {
-        app.settings.hotkeys.push(Hotkey {
-            name: String::new(),
-            enabled: true,
-            key: String::new(),
-            ctrl: false,
-            shift: false,
-            alt: false,
-            action: expressions.first().map(|e| HotkeyAction::ToggleExpression(e.clone())).unwrap_or(HotkeyAction::ToggleUi),
-        });
-    }
-}
-
 // ---------------------------------------------------------------------- overlays
 
 fn stats_overlay(app: &App, ctx: &Context) {
@@ -2781,13 +2713,15 @@ fn stats_overlay(app: &App, ctx: &Context) {
             let t = |ui: &mut egui::Ui, s: String| {
                 ui.label(RichText::new(s).monospace().color(Color32::from_rgb(220, 240, 220)));
             };
-            t(ui, format!("FPS {:6.1}   кадр CPU {:5.2} мс   draw calls {}", s.fps, s.cpu_ms, s.draw_calls));
-            t(ui, format!("rigrs    CPU {:5.1}%   RAM {:6.1} МБ (private {:6.1})", s.app.sample.cpu_pct, s.app.sample.working_set_mb, s.app.sample.private_mb));
+            let en = crate::i18n::is_en();
+            let (frame, ms, mb, trk, fps, texl) = if en { ("frame CPU", "ms", "MB", "tracker ", "fps", "textures") } else { ("кадр CPU", "мс", "МБ", "трекер  ", "к/с", "текстуры") };
+            t(ui, format!("FPS {:6.1}   {frame} {:5.2} {ms}   draw calls {}", s.fps, s.cpu_ms, s.draw_calls));
+            t(ui, format!("rigrs    CPU {:5.1}%   RAM {:6.1} {mb} (private {:6.1})", s.app.sample.cpu_pct, s.app.sample.working_set_mb, s.app.sample.private_mb));
             if app.tracker.is_some() {
-                t(ui, format!("трекер   CPU {:5.1}%   RAM {:6.1} МБ   {:4.0} к/с", s.tracker.sample.cpu_pct, s.tracker.sample.working_set_mb, app.tracker.as_ref().map(|t| t.rate).unwrap_or(0.0)));
+                t(ui, format!("{trk} CPU {:5.1}%   RAM {:6.1} {mb}   {:4.0} {fps}", s.tracker.sample.cpu_pct, s.tracker.sample.working_set_mb, app.tracker.as_ref().map(|t| t.rate).unwrap_or(0.0)));
             }
             let tex: u64 = app.avatar.as_ref().map(|a| a.texture_bytes).unwrap_or(0) + app.items.iter().map(|i| i.texture_bytes()).sum::<u64>();
-            t(ui, format!("GPU {}   текстуры {:.0} МБ", app.gpu.adapter_name, tex as f64 / 1048576.0));
+            t(ui, format!("GPU {}   {texl} {:.0} {mb}", app.gpu.adapter_name, tex as f64 / 1048576.0));
         });
     });
 }

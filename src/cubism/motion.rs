@@ -129,6 +129,30 @@ impl Motion {
         Motion { duration: json.meta.duration.max(0.0), looped: json.meta.r#loop, curves, time: 0.0 }
     }
 
+    pub fn duration(&self) -> f32 {
+        self.duration
+    }
+
+    /// Plays once (no looping); returns false when finished.
+    pub fn apply_once(&mut self, model: &mut Model, dt: f32, weight: f32) -> bool {
+        self.time += dt;
+        if self.time >= self.duration {
+            return false;
+        }
+        let t = self.time;
+        for c in &mut self.curves {
+            let v = c.eval(t);
+            match c.target {
+                Target::Param(i) => {
+                    let cur = model.params()[i];
+                    model.set_param(i, cur + (v - cur) * weight);
+                }
+                Target::Part(i) => model.parts_mut()[i] = v,
+            }
+        }
+        true
+    }
+
     pub fn apply(&mut self, model: &mut Model, dt: f32) {
         self.time += dt;
         if self.duration > 0.0 {

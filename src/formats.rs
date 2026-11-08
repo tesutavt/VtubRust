@@ -229,6 +229,9 @@ pub struct PosePart {
 #[serde(rename_all = "PascalCase", default)]
 pub struct VtubeJson {
     pub name: String,
+    #[serde(rename = "ModelID")]
+    pub model_id: String,
+    pub hotkeys: Vec<crate::hotkeys::Hotkey>,
     pub file_references: VtubeFiles,
     pub parameter_settings: Vec<VtubeParam>,
     pub physics_settings: Option<VtubePhysics>,

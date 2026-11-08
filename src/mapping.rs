@@ -187,8 +187,26 @@ pub fn default_rules(model: &Model) -> Vec<Rule> {
     v
 }
 
+/// Custom input parameters created by plugins (name → value).
+pub static CUSTOM_INPUTS: std::sync::Mutex<Option<std::collections::HashMap<String, f32>>> = std::sync::Mutex::new(None);
+
+pub fn set_custom_input(name: &str, v: f32) {
+    CUSTOM_INPUTS.lock().unwrap().get_or_insert_with(Default::default).insert(name.to_string(), v);
+}
+
+pub fn remove_custom_input(name: &str) {
+    if let Some(m) = CUSTOM_INPUTS.lock().unwrap().as_mut() {
+        m.remove(name);
+    }
+}
+
+fn custom_input(name: &str) -> Option<f32> {
+    CUSTOM_INPUTS.lock().unwrap().as_ref().and_then(|m| m.get(name).copied())
+}
+
 struct Compiled {
     input: Option<usize>,
+    custom: Option<String>,
     param: Option<usize>,
     value: f32,
     primed: bool,
@@ -219,7 +237,11 @@ impl Mapping {
         self.compiled = self
             .rules
             .iter()
-            .map(|r| Compiled { input: input_index(&r.input), param: model.param(&r.output), value: 0.0, primed: false })
+            .map(|r| {
+                let input = input_index(&r.input);
+                let custom = (input.is_none() && !r.input.is_empty()).then(|| r.input.clone());
+                Compiled { input, custom, param: model.param(&r.output), value: 0.0, primed: false }
+            })
             .collect();
         self.last_in = vec![0.0; self.rules.len()];
     }
@@ -233,7 +255,10 @@ impl Mapping {
                     if r.auto_blink && !ctx.tracking { v.min(ctx.blink) } else { v }
                 }
                 None if r.auto_breath => ctx.breath,
-                None => continue,
+                None => match c.custom.as_deref().and_then(custom_input) {
+                    Some(v) => v,
+                    None => continue,
+                },
             };
             self.last_in[i] = x;
             let span = r.in_range[1] - r.in_range[0];

@@ -79,6 +79,14 @@ impl Item {
         true
     }
 
+    /// Pins the item to a given triangle / barycentric point of the avatar.
+    pub fn pin_exact(&mut self, av: &Live2D, drawable: usize, tri: [u16; 3], bary: [f32; 3]) -> bool {
+        let Some((p, ang)) = frame_of(av, drawable, tri, bary) else { return false };
+        self.xf.pos = p;
+        self.pin = Some(Pin { drawable, tri, bary, angle0: ang, rot0: self.xf.rot, scale_ratio: self.xf.scale / av.xf.scale });
+        true
+    }
+
     pub fn follow(&mut self, av: &Live2D) {
         let Some(pin) = &self.pin else { return };
         if let Some((p, ang)) = frame_of(av, pin.drawable, pin.tri, pin.bary) {
@@ -90,14 +98,14 @@ impl Item {
 
     pub fn update(&mut self, dt: f32, inputs: &Inputs, neutral: &Inputs, tracking: bool, physics: bool) {
         let rxf = self.render_xf();
-        let pinned = self.pin.is_some();
+        let _ = (inputs, tracking);
         match &mut self.body {
             Body::Sprite(s) => s.update(dt),
             Body::Live2D(l) => {
-                // Pinned Live2D items follow the head, like the avatar does.
-                let inp = if pinned { inputs } else { neutral };
+                // Items are props: they never react to face tracking (as in VTS),
+                // only to their own idle animation and physics.
                 l.xf = rxf;
-                l.update(dt, inp, tracking && pinned, physics);
+                l.update(dt, neutral, false, physics);
             }
         }
     }

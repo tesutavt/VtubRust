@@ -139,62 +139,6 @@ pub struct ItemScene {
     pub items: Vec<SavedItem>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub enum HotkeyAction {
-    ToggleExpression(String),
-    LoadItemScene(String),
-    ClearItems,
-    Calibrate,
-    Screenshot,
-    ToggleUi,
-    ResetExpressions,
-}
-
-impl HotkeyAction {
-    pub fn label(&self) -> String {
-        match self {
-            HotkeyAction::ToggleExpression(e) => format!("Выражение: {e}"),
-            HotkeyAction::LoadItemScene(s) => format!("Сцена предметов: {s}"),
-            HotkeyAction::ClearItems => "Убрать все предметы".into(),
-            HotkeyAction::Calibrate => "Калибровка".into(),
-            HotkeyAction::Screenshot => "Скриншот".into(),
-            HotkeyAction::ToggleUi => "Показать/скрыть интерфейс".into(),
-            HotkeyAction::ResetExpressions => "Сбросить выражения".into(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Hotkey {
-    pub name: String,
-    pub enabled: bool,
-    /// egui key name, e.g. "F1", "1", "A". Empty = not assigned.
-    pub key: String,
-    pub ctrl: bool,
-    pub shift: bool,
-    pub alt: bool,
-    pub action: HotkeyAction,
-}
-
-impl Hotkey {
-    pub fn combo(&self) -> String {
-        if self.key.is_empty() {
-            return "не назначена".into();
-        }
-        let mut s = String::new();
-        if self.ctrl {
-            s += "Ctrl + ";
-        }
-        if self.shift {
-            s += "Shift + ";
-        }
-        if self.alt {
-            s += "Alt + ";
-        }
-        s + &self.key
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -278,7 +222,22 @@ pub struct Settings {
     pub last_items: Vec<SavedItem>,
     pub item_scenes: Vec<ItemScene>,
     pub hotkeys_enabled: bool,
-    pub hotkeys: Vec<Hotkey>,
+    /// Hotkeys per model (key = model3 path), in the VTS JSON format.
+    pub model_hotkeys: HashMap<String, Vec<crate::hotkeys::Hotkey>>,
+    pub screen_buttons: bool,
+    pub send_to_pc: bool,
+    pub screen_buttons_opacity: f32,
+    pub light_last_mode: u8,
+
+    pub api_on: bool,
+    pub api_port: u16,
+    pub api_lan: bool,
+    pub api_tokens: Vec<crate::api::ApiToken>,
+    pub api_permissions: Vec<String>,
+
+    pub twitch: crate::twitch::TwitchCfg,
+    /// UI language: "ru" or "en".
+    pub language: String,
 }
 
 impl Default for Settings {
@@ -355,7 +314,18 @@ impl Default for Settings {
             last_items: Vec::new(),
             item_scenes: Vec::new(),
             hotkeys_enabled: true,
-            hotkeys: Vec::new(),
+            model_hotkeys: HashMap::new(),
+            screen_buttons: false,
+            send_to_pc: true,
+            screen_buttons_opacity: 75.0,
+            light_last_mode: 1,
+            api_on: false,
+            api_port: 8001,
+            api_lan: false,
+            api_tokens: Vec::new(),
+            api_permissions: Vec::new(),
+            twitch: Default::default(),
+            language: "ru".into(),
         }
     }
 }
