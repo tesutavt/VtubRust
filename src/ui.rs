@@ -1620,7 +1620,7 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
                 }
                 ui.add_space(14.0);
                 let cancel_label = if kind == Modal::VfxList { "Готово" } else { "Отмена" };
-                let no = egui::Button::new(RichText::new(cancel_label).size(17.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(222, 88, 116)).rounding(3.0);
+                let no = egui::Button::new(RichText::new(tr(cancel_label)).size(17.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(222, 88, 116)).rounding(3.0);
                 if ui.add_sized([170.0, 40.0], no).clicked() {
                     cancel = true;
                 }

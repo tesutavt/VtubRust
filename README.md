@@ -4,162 +4,223 @@
 
 # ✨ VtubRust
 
-**Лёгкий Live2D-аватар с трекингом лица для стримов — написан на Rust, ест в разы меньше ресурсов.**
+**A lightweight Live2D avatar app with face tracking for streaming. Written in Rust, uses a fraction of the resources.**
 
 <p>
-  <img src="https://img.shields.io/github/last-commit/tesutavt/VtubRust?style=for-the-badge&labelColor=363a4f&color=b7bdf8&label=Обновлено" alt="Last commit"/>
-  <img src="https://img.shields.io/github/repo-size/tesutavt/VtubRust?style=for-the-badge&labelColor=363a4f&color=c6a0f6&label=Размер" alt="Repo size"/>
-  <img src="https://img.shields.io/github/stars/tesutavt/VtubRust?style=for-the-badge&labelColor=363a4f&color=eed49f&label=Звёзды" alt="Stars"/>
-  <img src="https://img.shields.io/github/license/tesutavt/VtubRust?style=for-the-badge&labelColor=363a4f&color=a6da95&label=Лицензия" alt="License"/>
+  <img src="https://img.shields.io/github/last-commit/tesutavt/VtubRust?style=for-the-badge&labelColor=363a4f&color=b7bdf8&label=Updated" alt="Last commit"/>
+  <img src="https://img.shields.io/github/repo-size/tesutavt/VtubRust?style=for-the-badge&labelColor=363a4f&color=c6a0f6&label=Size" alt="Repo size"/>
+  <img src="https://img.shields.io/github/stars/tesutavt/VtubRust?style=for-the-badge&labelColor=363a4f&color=eed49f&label=Stars" alt="Stars"/>
+  <img src="https://img.shields.io/github/license/tesutavt/VtubRust?style=for-the-badge&labelColor=363a4f&color=a6da95&label=License" alt="License"/>
 </p>
 
-<img src="https://img.shields.io/badge/статус-в%20разработке-f5a97f?style=flat-square&labelColor=363a4f" alt="Status"/>
+<img src="https://img.shields.io/badge/status-in%20development-f5a97f?style=flat-square&labelColor=363a4f" alt="Status"/>
+<img src="https://img.shields.io/badge/UI-English%20%7C%20Русский-8aadf4?style=flat-square&labelColor=363a4f" alt="Languages"/>
 
 <br/><br/>
 
-[🚀 Скачать / демо-видео](https://github.com/tesutavt/VtubRust/releases/latest) · [🐛 Сообщить об ошибке](https://github.com/tesutavt/VtubRust/issues) · [💡 Предложить идею](https://github.com/tesutavt/VtubRust/issues)
+[🚀 Download / demo video](https://github.com/tesutavt/VtubRust/releases/latest) · [🐛 Report a bug](https://github.com/tesutavt/VtubRust/issues) · [💡 Suggest an idea](https://github.com/tesutavt/VtubRust/issues)
 
 </div>
 
 <img src="https://raw.githubusercontent.com/catppuccin/catppuccin/main/assets/palette/macchiato.png" width="100%" height="2" alt=""/>
 
 <details>
-<summary><b>📑 Содержание</b></summary>
+<summary><b>📑 Contents</b></summary>
 
-- [О проекте](#-о-проекте)
-- [Скриншоты](#-скриншоты)
-- [Возможности](#-возможности)
-- [Технологии](#%EF%B8%8F-технологии)
-- [Установка и запуск](#-установка-и-запуск)
-- [Структура проекта](#-структура-проекта)
-- [Планы](#%EF%B8%8F-планы)
-- [Автор](#-автор)
+- [About](#-about)
+- [Screenshots](#-screenshots)
+- [Features](#-features)
+- [Plugin API (VTube Studio compatible)](#-plugin-api-vtube-studio-compatible)
+- [Twitch integration](#-twitch-integration)
+- [Tech stack](#%EF%B8%8F-tech-stack)
+- [Install and run](#-install-and-run)
+- [Project structure](#-project-structure)
+- [Roadmap](#%EF%B8%8F-roadmap)
+- [Author](#-author)
 
 </details>
 
-## 📖 О проекте
+## 📖 About
 
-Сейчас популярно делать фанатские переносы программ и смотреть, что будет с производительностью.
-**VtubRust** (внутри — `rigrs`) — учебная независимая реализация того, что делает VTuber-приложение
-при показе обычного Live2D-аватара: рендер Cubism-модели, трекинг лица и рук с веб-камеры,
-предметы, фоны, эффекты и вывод в OBS. Интерфейс повторяет привычную раскладку VTube Studio,
-чтобы было легко переключиться, а модели с их настройками (`.vtube.json`) подхватываются как есть.
+Fan "ports" of programs and games are popular right now, mostly to see what happens to performance.
+**VtubRust** (internally `rigrs`) is an educational, independent implementation of what a VTuber app does
+when it shows a regular Live2D avatar: rendering the Cubism model, face and hand tracking from a webcam,
+items, backgrounds, effects, hotkeys, Twitch, a plugin API and output to OBS. The interface follows the familiar
+VTube Studio layout so switching is easy, and models with their settings (`.vtube.json`, including hotkeys)
+are picked up as they are.
 
-**Сколько ест** (GTX 1660, модель на 56 мешей, без камеры): **60 FPS, ~1 мс CPU на кадр,
-~1% CPU, ~150–170 МБ RAM**. Модель на 480 мешей и 56 цепочек физики — ~2 мс на кадр.
-Трекер работает отдельным процессом (OpenSeeFace / Mediapipe), его нагрузку видно в оверлее.
+**Resource usage** (GTX 1660, 56-mesh model, camera off): **60 FPS, ~1 ms CPU per frame,
+~1% CPU, ~150–170 MB RAM**. A 480-mesh model with 56 physics chains takes ~2 ms per frame.
+The tracker runs as a separate process (OpenSeeFace / Mediapipe); its load is shown in the overlay.
 
-> ⚠️ Проект не связан с VTube Studio / DenchiSoft и не использует их код. Используются только
-> открытые форматы моделей Live2D. Live2D Cubism Core — собственность Live2D Inc.
+> ⚠️ This project is not affiliated with VTube Studio / DenchiSoft and does not use their code. Only the
+> open Live2D model formats and the publicly documented VTube Studio plugin API are used.
+> Live2D Cubism Core is the property of Live2D Inc.
 
-## 📸 Скриншоты
+## 📸 Screenshots
 
 <p align="center">
-  <img src="screenshots/01_main.png" width="45%" alt="Главный экран"/>
+  <img src="screenshots/01_main.png" width="45%" alt="Main screen"/>
   &nbsp;
-  <img src="screenshots/02_models.png" width="45%" alt="Выбор модели"/>
+  <img src="screenshots/02_models.png" width="45%" alt="Model picker"/>
 </p>
 <p align="center">
-  <img src="screenshots/04_settings_camera.png" width="45%" alt="Настройки камеры"/>
+  <img src="screenshots/10_hotkeys.jpg" width="45%" alt="Hotkeys tab"/>
   &nbsp;
-  <img src="screenshots/05_settings_model.png" width="45%" alt="Настройки модели"/>
+  <img src="screenshots/11_twitch_triggers.jpg" width="45%" alt="Twitch triggers of a hotkey"/>
 </p>
 <p align="center">
-  <img src="screenshots/06_vfx_snow.png" width="30%" alt="Снег и подсветка"/>
+  <img src="screenshots/12_emote_dropper.jpg" width="45%" alt="Twitch Emote Dropper"/>
   &nbsp;
-  <img src="screenshots/07_vfx_ascii.png" width="30%" alt="ASCII-графика"/>
+  <img src="screenshots/04_settings_camera.png" width="45%" alt="Camera settings"/>
+</p>
+<p align="center">
+  <img src="screenshots/06_vfx_snow.png" width="30%" alt="Snow and rim light"/>
   &nbsp;
-  <img src="screenshots/09_vfx_cinema.png" width="30%" alt="Кинорамка"/>
+  <img src="screenshots/07_vfx_ascii.png" width="30%" alt="ASCII art"/>
+  &nbsp;
+  <img src="screenshots/09_vfx_cinema.png" width="30%" alt="Cinematic bars"/>
 </p>
 
-🎬 Демо-видео (50 секунд) лежит в [последнем релизе](https://github.com/tesutavt/VtubRust/releases/latest).
+🎬 A demo video (about 50 seconds) is attached to the [latest release](https://github.com/tesutavt/VtubRust/releases/latest).
 
-## 🌟 Возможности
+## 🌟 Features
 
-- ✅ Рендер Live2D Cubism 3/4/5: физика, idle-анимации, выражения (`exp3`), позы, сглаженные или жёсткие маски
-- ✅ Совместимость с моделями VTube Studio: маппинг параметров из `.vtube.json`, редактор «вход → выход»
-- ✅ Трекинг лица: OpenSeeFace (уровни 0–5) и **Mediapipe** (blendshape-ы), трекинг **рук** (26 входов)
-- ✅ Калибровка, чувствительность моргания/глаз/рта/улыбки/бровей, синхронизация моргания
-- ✅ Ввод мыши, поддержка **Tobii** (через Tobii Stream Engine)
-- ✅ Предметы (PNG/GIF/Live2D) с привязкой к мешу модели, сцены предметов и хоткеи
-- ✅ Фоны, наложение освещения (цвет монитора или окна тонирует модель)
-- ✅ 18 визуальных эффектов (снег, свечение, подсветка, ASCII, помехи, кино и др.) + пресеты
-- ✅ Вывод: **Spout2** (с прозрачностью), **NDI**, **виртуальная камера Windows 11** (rigrsCam)
-- ✅ Запись анимации Live2D в `.motion3.json`, скриншоты
-- ✅ Оверлей производительности: FPS, CPU, RAM приложения и трекера
+- ✅ Live2D Cubism 3/4/5 rendering: physics, idle animations, expressions (`exp3`), poses, smooth or hard masks
+- ✅ VTube Studio model compatibility: parameter mapping from `.vtube.json`, an "input → output" editor
+- ✅ Face tracking: OpenSeeFace (levels 0–5) and **Mediapipe** (blendshapes), **hand** tracking (26 inputs)
+- ✅ Calibration, blink/eye/mouth/smile/brow sensitivity, blink sync
+- ✅ Mouse input, **Tobii** support (via Tobii Stream Engine)
+- ✅ **Hotkeys** in the VTube Studio format, per model, imported from `.vtube.json`:
+  up to 3-key combos, global hotkeys (work when the window isn't focused), hand gestures,
+  fade / auto-off / off-on-key-release, on-screen buttons 1–8, sounds (WAV/MP3)
+- ✅ **Twitch**: chat, hotkey triggers, Emote Dropper, flying chat, BTTV / 7TV / FFZ emotes
+- ✅ **Plugin API** compatible with the VTube Studio Public API 1.0
+- ✅ Items (PNG/GIF/Live2D): drop an item onto the model and it sticks to that spot; item scenes on hotkeys
+- ✅ Backgrounds, lighting overlay (a monitor's or window's color tints the model)
+- ✅ 18 visual effects (snow, glow, rim light, ASCII, glitches, cinema and more) + presets
+- ✅ Output: **Spout2** (with transparency), **NDI**, **Windows 11 virtual camera** (rigrsCam)
+- ✅ Live2D animation recording to `.motion3.json`, screenshots
+- ✅ Performance overlay: FPS, CPU and RAM of the app and the tracker
+- ✅ Interface in **English** and **Russian** (Settings → General → Language)
 
-## 🛠️ Технологии
+## 🔌 Plugin API (VTube Studio compatible)
+
+Settings → General → **Plugin API** → "Start API (plugins)". The server speaks the
+[VTube Studio Public API](https://github.com/DenchiSoft/VTubeStudio) protocol:
+
+- WebSocket on `ws://localhost:8001` (port configurable, optional LAN access);
+- UDP discovery broadcast `VTubeStudioAPIStateBroadcast` on port `47779`;
+- token authentication with an Allow / Deny prompt, tokens are remembered, revocable in the settings;
+- the same request names, fields and error IDs: model and hotkey requests, expressions, ArtMesh list / tint /
+  hit test, input and Live2D parameters, custom parameters and `InjectParameterData`, physics overrides,
+  NDI config, items (list / load / unload / move / pin / sort), post-processing, permissions;
+- events: `TestEvent`, `ModelLoadedEvent`, `TrackingStatusChangedEvent`, `ModelMovedEvent`,
+  `HotkeyTriggeredEvent`, `ExpressionToggledEvent`, `ItemEvent`, `ModelClickedEvent`, `PostProcessingEvent` and others.
+
+Existing VTS plugins and tools connect to rigrs the same way they connect to VTube Studio.
+
+## 💜 Twitch integration
+
+Settings → General → **Twitch settings**.
+
+| What | Without login (channel name only) | With login |
+|---|---|---|
+| Chat, text commands | ✅ | ✅ |
+| Bits, subs, gift subs, raids, Power-Ups | ✅ | ✅ |
+| Follows, channel point rewards, shoutouts, ad breaks | — | ✅ (EventSub) |
+
+To log in, create a free app at [dev.twitch.tv/console](https://dev.twitch.tv/console/apps/create)
+(client type **Public**), paste its Client ID and press "Log in with Twitch" (device code flow, no password goes through rigrs).
+
+- **Hotkey triggers**: every hotkey has its own Twitch trigger window: text words (with role restrictions),
+  bits and gift-sub ranges, rewards, Power-Ups, subs, follows, raids, shoutouts, ad breaks, cooldown and reset.
+- **Emote Dropper**: chat emotes fall on the screen and bounce off the model and the window edges.
+- **Flying chat**: messages with emotes fly across the screen, with filters (bots, links, words) and limits.
+
+> The Emote Dropper and flying chat are drawn in the app window; they are not part of the Spout2 / NDI / virtual camera output yet.
+
+## 🛠️ Tech stack
 
 <p align="left">
   <img src="https://skillicons.dev/icons?i=rust,windows,python" alt="Tech stack"/>
 </p>
 
-Rust · wgpu (DX12/Vulkan) · winit · egui · Media Foundation (виртуальная камера) · OpenSeeFace / Mediapipe (трекер)
+Rust · wgpu (DX12/Vulkan) · winit · egui · tungstenite · ureq · Media Foundation (virtual camera) · OpenSeeFace / Mediapipe (tracker)
 
-## 🚀 Установка и запуск
+## 🚀 Install and run
 
-**Готовая сборка:** скачайте архив из [релизов](https://github.com/tesutavt/VtubRust/releases/latest),
-распакуйте и запустите `rigrs.exe`.
+**Prebuilt:** download the archive from the [releases](https://github.com/tesutavt/VtubRust/releases/latest),
+unzip it and run `rigrs.exe`.
 
-**Что нужно на компьютере:**
+**What your PC needs:**
 
-| Что | Зачем | Где взять |
+| What | Why | Where to get it |
 |---|---|---|
-| Windows 10/11 x64 | — | виртуальная камера — только Windows 11 |
-| `Live2DCubismCore.dll` | загрузка `.moc3` (проприетарное ядро Live2D) | установленная VTube Studio подхватится сама; или официальный [Cubism SDK for Native](https://www.live2d.com/en/sdk/download/native/) — положите DLL рядом с `rigrs.exe` |
-| `facetracker.exe` | трекинг с веб-камеры | берётся из установленной VTube Studio или из [OpenSeeFace](https://github.com/emilianavt/OpenSeeFace/releases) (папка `OpenSeeFace` рядом с exe) |
-| NDI Tools | только для вывода NDI | [ndi.video](https://ndi.video/tools/) |
+| Windows 10/11 x64 | — | the virtual camera needs Windows 11 |
+| `Live2DCubismCore.dll` | loading `.moc3` (proprietary Live2D core) | an installed VTube Studio is found automatically; or the official [Cubism SDK for Native](https://www.live2d.com/en/sdk/download/native/): put the DLL next to `rigrs.exe` |
+| `facetracker.exe` | webcam tracking | taken from an installed VTube Studio or from [OpenSeeFace](https://github.com/emilianavt/OpenSeeFace/releases) (`OpenSeeFace` folder next to the exe) |
+| NDI Tools | NDI output only | [ndi.video](https://ndi.video/tools/) |
 
-Пути можно поменять в **Настройки → Общее → Пути**.
+Paths can be changed in **Settings → General → Paths**.
 
-**Виртуальная камера rigrsCam:** Настройки → Камера → «Помощь с установкой» → «Открыть папку» →
-запустите `install.bat` **от имени администратора** (один раз).
+**rigrsCam virtual camera:** Settings → Camera → "Installation help" → "Open folder" →
+run `install.bat` **as administrator** (once).
 
-**Сборка из исходников:**
+**Build from source:**
 
 ```bash
-# 1. Клонировать репозиторий
+# 1. Clone the repository
 git clone https://github.com/tesutavt/VtubRust.git
 cd VtubRust
 
-# 2. Собрать (нужен Rust: https://rustup.rs и MSVC Build Tools)
+# 2. Build (needs Rust: https://rustup.rs and the MSVC Build Tools)
 cargo build --release --workspace
 
-# 3. Запустить
+# 3. Run
 target/release/rigrs.exe
 ```
 
-## 📂 Структура проекта
+## 📂 Project structure
 
 ```
 VtubRust/
 ├── src/
-│   ├── cubism/      # FFI к Cubism Core, физика, motion3, pose3
-│   ├── gpu/         # wgpu-рендер, шейдеры, маски, VFX
-│   ├── scene/       # модель, спрайты, предметы и их привязка
-│   ├── tracking.rs  # OpenSeeFace / Mediapipe / руки
-│   ├── mapping.rs   # правила «вход → параметр» (как в .vtube.json)
-│   ├── spout.rs     # видеовыходы: Spout2, NDI, виртуальная камера
-│   ├── vfx.rs       # визуальные эффекты
-│   └── ui.rs        # интерфейс (egui)
-├── vcam/            # rigrs_vcam.dll — источник виртуальной камеры Windows 11
-├── screenshots/     # картинки для README
+│   ├── cubism/        # Cubism Core FFI, physics, motion3, pose3
+│   ├── gpu/           # wgpu renderer, shaders, masks, VFX
+│   ├── scene/         # model, sprites, items and pinning
+│   ├── tracking.rs    # OpenSeeFace / Mediapipe / hands
+│   ├── mapping.rs     # "input → parameter" rules (as in .vtube.json)
+│   ├── hotkeys.rs     # VTS-format hotkeys, gestures, Twitch trigger matching
+│   ├── api.rs         # VTube Studio compatible plugin API (WebSocket + UDP discovery)
+│   ├── twitch.rs      # Twitch IRC chat, OAuth device login, EventSub, BTTV/7TV/FFZ
+│   ├── twitch_fx.rs   # Emote Dropper and flying chat
+│   ├── spout.rs       # video outputs: Spout2, NDI, virtual camera
+│   ├── vfx.rs         # visual effects
+│   ├── i18n.rs        # English / Russian UI
+│   └── ui*.rs         # interface (egui)
+├── vcam/              # rigrs_vcam.dll: Windows 11 virtual camera source
+├── screenshots/       # images for this README
 └── README.md
 ```
 
-## 🗺️ Планы
+## 🗺️ Roadmap
 
-- [x] Рендер Live2D, физика, анимации, выражения
-- [x] Трекинг лица и рук, Tobii, мышь
-- [x] Предметы, фоны, освещение, VFX
-- [x] Spout2, NDI, виртуальная камера
-- [ ] API для плагинов (совместимый с VTube Studio)
-- [ ] Липсинк по микрофону
-- [ ] Трекинг с телефона (Wi-Fi / USB)
-- [ ] Twitch-интеграция, Discord, mocopi
-- [ ] Звуковые эффекты, контроллер
+- [x] Live2D rendering, physics, animations, expressions
+- [x] Face and hand tracking, Tobii, mouse
+- [x] Items, backgrounds, lighting, VFX
+- [x] Spout2, NDI, virtual camera
+- [x] Hotkeys (VTube Studio format), gestures, on-screen buttons
+- [x] Plugin API (VTube Studio compatible)
+- [x] Twitch integration
+- [x] English / Russian interface
+- [ ] Twitch effects in the Spout2 / NDI / virtual camera output
+- [ ] Microphone lipsync
+- [ ] Phone tracking (Wi-Fi / USB)
+- [ ] Discord, mocopi
+- [ ] Controller input
 
-## 💜 Автор
+## 💜 Author
 
 <table>
   <tr>
@@ -168,7 +229,7 @@ VtubRust/
         <img src="https://github.com/tesutavt.png" width="100" style="border-radius:50%" alt="Tesuta"/><br/>
         <b>Tesuta</b>
       </a><br/>
-      <sub>втубер · программист</sub>
+      <sub>VTuber · programmer</sub>
     </td>
   </tr>
 </table>
@@ -176,5 +237,5 @@ VtubRust/
 <img src="https://raw.githubusercontent.com/catppuccin/catppuccin/main/assets/palette/macchiato.png" width="100%" height="2" alt=""/>
 
 <p align="center">
-  <i>Если проект понравился — поставь ⭐, мне будет приятно!</i>
+  <i>If you like the project, leave a ⭐. It means a lot!</i>
 </p>
