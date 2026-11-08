@@ -138,7 +138,7 @@ To log in, create a free app at [dev.twitch.tv/console](https://dev.twitch.tv/co
 - **Emote Dropper**: chat emotes fall on the screen and bounce off the model and the window edges.
 - **Flying chat**: messages with emotes fly across the screen, with filters (bots, links, words) and limits.
 
-> The Emote Dropper and flying chat are drawn in the app window; they are not part of the Spout2 / NDI / virtual camera output yet.
+Both effects are drawn on top of the model in the app window **and in the Spout2 / NDI / virtual camera output**, so viewers see them in OBS.
 
 ## 🛠️ Tech stack
 
@@ -214,7 +214,7 @@ VtubRust/
 - [x] Plugin API (VTube Studio compatible)
 - [x] Twitch integration
 - [x] English / Russian interface
-- [ ] Twitch effects in the Spout2 / NDI / virtual camera output
+- [x] Twitch effects in the Spout2 / NDI / virtual camera output
 - [ ] Microphone lipsync
 - [ ] Phone tracking (Wi-Fi / USB)
 - [ ] Discord, mocopi

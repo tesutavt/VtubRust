@@ -375,6 +375,22 @@ impl VideoOut {
             }
             if Some(i) == newest {
                 let data = s.buf.slice(..).get_mapped_range();
+                // Dev hook: RIGRS_DUMP_OUT=file.png saves one output frame 12 s after start.
+                static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+                static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                let start = *START.get_or_init(std::time::Instant::now);
+                if start.elapsed().as_secs() >= 12 && !DONE.swap(true, Ordering::Relaxed) {
+                    if let Some(path) = std::env::var_os("RIGRS_DUMP_OUT") {
+                        let row = padded_row(w) as usize;
+                        let mut px = Vec::with_capacity((w * h * 4) as usize);
+                        for y in 0..h as usize {
+                            px.extend_from_slice(&data[y * row..y * row + w as usize * 4]);
+                        }
+                        if let Some(img) = image::RgbaImage::from_raw(w, h, px) {
+                            let _ = img.save(path);
+                        }
+                    }
+                }
                 match &mut self.sink {
                     #[cfg(windows)]
                     Sink::Spout(sender) => sender.send(&data, padded_row(w)),

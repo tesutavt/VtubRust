@@ -71,6 +71,9 @@ pub struct App {
     pub egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_rend: egui_wgpu::Renderer,
+    /// One egui renderer per video output (Spout2, NDI, virtual camera) for the Twitch overlay.
+    /// Separate instances because each keeps its own vertex buffers for the frame.
+    fx_rend: Vec<egui_wgpu::Renderer>,
 
     pub settings: Settings,
     pub paths: Paths,
@@ -207,6 +210,7 @@ impl App {
             None,
         );
         let egui_rend = egui_wgpu::Renderer::new(&gpu.device, gpu.format, None, 1, false);
+        let fx_rend = (0..3).map(|_| egui_wgpu::Renderer::new(&gpu.device, gpu.format, None, 1, false)).collect();
 
         let mut settings = settings;
         fix_paths(&mut settings);
@@ -242,6 +246,7 @@ impl App {
             egui_ctx,
             egui_state,
             egui_rend,
+            fx_rend,
             library: Library::default(),
             settings,
             paths,
@@ -1041,6 +1046,14 @@ impl App {
         let out = ctx.run(raw, |c| crate::ui::run(self, c));
         self.egui_state.handle_platform_output(&self.window, out.platform_output);
         let jobs = ctx.tessellate(out.shapes, out.pixels_per_point);
+        let has_outputs = self.spout.is_some() || self.ndi.is_some() || self.vcam.is_some();
+        let fx_prims = if has_outputs && !self.fx.shapes.is_empty() {
+            let shapes = std::mem::take(&mut self.fx.shapes);
+            ctx.tessellate(shapes.into_iter().map(|shape| egui::epaint::ClippedShape { clip_rect: egui::Rect::EVERYTHING, shape }).collect(), 1.0)
+        } else {
+            Vec::new()
+        };
+        let fx_screen = self.fx.screen;
 
         // Simulation
         let physics = self.settings.physics;
@@ -1135,6 +1148,9 @@ impl App {
         let sd = egui_wgpu::ScreenDescriptor { size_in_pixels: [gpu.config.width, gpu.config.height], pixels_per_point: out.pixels_per_point };
         for (id, delta) in &out.textures_delta.set {
             self.egui_rend.update_texture(&gpu.device, &gpu.queue, *id, delta);
+            for r in &mut self.fx_rend {
+                r.update_texture(&gpu.device, &gpu.queue, *id, delta);
+            }
         }
         let mut draw_calls = 0;
         let bg = self.bg_sprite.as_ref().map(|(_, s)| s);
@@ -1178,6 +1194,46 @@ impl App {
                 if let Some(v) = vfx {
                     v.run(&mut enc, slot, &out.offscreen.scene_view, &refs);
                 }
+                // Twitch Emote Dropper / flying chat on top of the scene, mapped like the model
+                // (window points → output pixels, same stretch as the scene itself).
+                if !fx_prims.is_empty() && fx_screen.x > 0.0 && fx_screen.y > 0.0 {
+                    let (w, h) = out.size();
+                    let (sx, sy) = (w as f32 / fx_screen.x, h as f32 / fx_screen.y);
+                    let prims: Vec<egui::ClippedPrimitive> = fx_prims
+                        .iter()
+                        .map(|p| {
+                            let mut p = p.clone();
+                            let r = p.clip_rect;
+                            p.clip_rect = if r == egui::Rect::EVERYTHING {
+                                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))
+                            } else {
+                                egui::Rect::from_min_max(egui::pos2(r.min.x * sx, r.min.y * sy), egui::pos2(r.max.x * sx, r.max.y * sy))
+                            };
+                            if let egui::epaint::Primitive::Mesh(m) = &mut p.primitive {
+                                for v in &mut m.vertices {
+                                    v.pos.x *= sx;
+                                    v.pos.y *= sy;
+                                }
+                            }
+                            p
+                        })
+                        .collect();
+                    let sd = egui_wgpu::ScreenDescriptor { size_in_pixels: [w, h], pixels_per_point: 1.0 };
+                    let rend = &mut self.fx_rend[slot - 1];
+                    rend.update_buffers(&gpu.device, &gpu.queue, &mut enc, &prims, &sd);
+                    let pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("twitch-fx-out"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &out.offscreen.scene_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    rend.render(&mut pass.forget_lifetime(), &prims, &sd);
+                }
                 gpu.unpremultiply(&mut enc, &out.offscreen);
                 out.record_copy(&mut enc);
             }
@@ -1219,6 +1275,9 @@ impl App {
         }
         for id in &out.textures_delta.free {
             self.egui_rend.free_texture(id);
+            for r in &mut self.fx_rend {
+                r.free_texture(id);
+            }
         }
         if let Some((buf, w, h)) = shot {
             self.finish_screenshot(buf, w, h);

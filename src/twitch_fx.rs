@@ -57,6 +57,9 @@ pub struct Fx {
     queue: Vec<ChatMsg>,
     seed: u64,
     time: f32,
+    /// Overlay shapes of the current frame (window points), also drawn into video outputs.
+    pub shapes: Vec<egui::Shape>,
+    pub screen: Vec2,
 }
 
 impl Default for Fx {
@@ -73,6 +76,8 @@ impl Default for Fx {
             queue: Vec::new(),
             seed: 0x9E3779B97F4A7C15 ^ std::process::id() as u64,
             time: 0.0,
+            shapes: Vec::new(),
+            screen: Vec2::ZERO,
         }
     }
 }
@@ -223,16 +228,17 @@ fn chat_allowed(m: &ChatMsg, cfg: &ChatCfg) -> bool {
 
 /// Spawns test content (the "Test" button).
 pub fn test(app: &mut App, dropper: bool) {
+    let text = if crate::i18n::is_en() { "Hello from rigrs! Kappa PogChamp LUL" } else { "Привет из rigrs! Kappa PogChamp LUL" };
+    let emote = |code: &str, id: &str| {
+        let at = text.find(code).unwrap_or(0);
+        crate::twitch::Emote { code: code.into(), url: format!("https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/2.0"), range: Some((at, at + code.len())) }
+    };
     let msg = ChatMsg {
         user: "rigrs".into(),
         user_id: "0".into(),
         color: Some([145, 70, 255]),
-        text: "Привет из rigrs! Kappa PogChamp LUL".into(),
-        emotes: vec![
-            crate::twitch::Emote { code: "Kappa".into(), url: "https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/2.0".into(), range: Some((22, 27)) },
-            crate::twitch::Emote { code: "PogChamp".into(), url: "https://static-cdn.jtvnw.net/emoticons/v2/305954156/default/dark/2.0".into(), range: Some((28, 36)) },
-            crate::twitch::Emote { code: "LUL".into(), url: "https://static-cdn.jtvnw.net/emoticons/v2/425618/default/dark/2.0".into(), range: Some((37, 40)) },
-        ],
+        text: text.into(),
+        emotes: vec![emote("Kappa", "25"), emote("PogChamp", "305954156"), emote("LUL", "425618")],
         broadcaster: true,
         sub: true,
         mod_: true,
@@ -382,6 +388,7 @@ pub fn run(app: &mut App, ctx: &Context, dt: f32) {
         }
     }
     if !app.fx.active() {
+        app.fx.shapes.clear();
         return;
     }
     app.fx.time += dt;
@@ -447,6 +454,11 @@ pub fn run(app: &mut App, ctx: &Context, dt: f32) {
     let _ = c.foreground;
     let layer = egui::Order::Background;
     let painter = ctx.layer_painter(egui::LayerId::new(layer, egui::Id::new("twitch-fx")));
+    // Shapes are kept so the same overlay can be drawn into Spout2 / NDI / virtual camera.
+    let mut shapes: Vec<egui::Shape> = Vec::new();
+    let txt = |shapes: &mut Vec<egui::Shape>, pos: Pos2, a: Align2, s: &str, f: FontId, c: Color32| {
+        ctx.fonts(|fo| shapes.push(egui::Shape::text(fo, pos, a, s, f, c)));
+    };
     let t = app.fx.time;
     for e in &app.fx.drops {
         let Some(fr) = app.fx.tex.get(&e.url) else { continue };
@@ -465,7 +477,7 @@ pub fn run(app: &mut App, ctx: &Context, dt: f32) {
             mesh.vertices.push(egui::epaint::Vertex { pos: e.pos + rot(corners[i]), uv: uvs[i], color: col });
         }
         mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
-        painter.add(egui::Shape::mesh(mesh));
+        shapes.push(egui::Shape::mesh(mesh));
     }
     let fx = &mut app.fx;
     let tex = &fx.tex;
@@ -489,8 +501,8 @@ pub fn run(app: &mut App, ctx: &Context, dt: f32) {
         let ucol = gray(f.color).gamma_multiply(a);
         let g = painter.layout_no_wrap(name.clone(), FontId::proportional(f.size).clone(), ucol);
         let w = g.size().x;
-        painter.text(Pos2::new(x, base_y + wave(x)) + sh_off, Align2::LEFT_CENTER, &name, fid.clone(), sh_col);
-        painter.text(Pos2::new(x, base_y + wave(x)), Align2::LEFT_CENTER, &name, fid.clone(), ucol);
+        txt(&mut shapes, Pos2::new(x, base_y + wave(x)) + sh_off, Align2::LEFT_CENTER, &name, fid.clone(), sh_col);
+        txt(&mut shapes, Pos2::new(x, base_y + wave(x)), Align2::LEFT_CENTER, &name, fid.clone(), ucol);
         x += w;
         for (pi, p) in f.pieces.iter().enumerate() {
             match p {
@@ -499,8 +511,8 @@ pub fn run(app: &mut App, ctx: &Context, dt: f32) {
                     let col = gray(col).gamma_multiply(a);
                     let g = painter.layout_no_wrap(s.clone(), fid.clone(), col);
                     let gw = g.size().x;
-                    painter.text(Pos2::new(x, base_y + wave(x)) + sh_off, Align2::LEFT_CENTER, s, fid.clone(), sh_col);
-                    painter.text(Pos2::new(x, base_y + wave(x)), Align2::LEFT_CENTER, s, fid.clone(), col);
+                    txt(&mut shapes, Pos2::new(x, base_y + wave(x)) + sh_off, Align2::LEFT_CENTER, s, fid.clone(), sh_col);
+                    txt(&mut shapes, Pos2::new(x, base_y + wave(x)), Align2::LEFT_CENTER, s, fid.clone(), col);
                     x += gw + f.size * 0.25;
                 }
                 Piece::Emote(u) => {
@@ -512,7 +524,7 @@ pub fn run(app: &mut App, ctx: &Context, dt: f32) {
                         let tx = frame_of(fr, ts * c.emote_anim_speed);
                         let r = Rect::from_min_size(Pos2::new(x, base_y + wave(x) - h / 2.0), Vec2::new(wdt, h));
                         let tint = if c.grayscale { Color32::from_gray(200) } else { Color32::WHITE };
-                        painter.image(tx.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), tint.gamma_multiply(a));
+                        shapes.push(egui::Shape::image(tx.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), tint.gamma_multiply(a)));
                         x += wdt + f.size * 0.25;
                     } else {
                         x += h;
@@ -522,5 +534,8 @@ pub fn run(app: &mut App, ctx: &Context, dt: f32) {
         }
         f.width = x - f.pos.x;
     }
+    painter.extend(shapes.iter().cloned());
+    app.fx.shapes = shapes;
+    app.fx.screen = ctx.screen_rect().size();
     ctx.request_repaint();
 }
