@@ -8,6 +8,7 @@ mod api;
 mod api_events;
 mod artmesh;
 mod app;
+mod controller;
 mod cubism_editor;
 mod hotkeys;
 mod twitch;

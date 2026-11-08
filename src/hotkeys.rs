@@ -477,11 +477,17 @@ fn vk_of(name: &str) -> Option<u16> {
         "LeftAlt" => "Alt", "Mouse3" => "MiddleMouseButton", "Esc" => "Escape",
         n => n,
     };
-    KEYS.iter().find(|k| k.0.eq_ignore_ascii_case(name)).map(|k| k.1)
+    KEYS.iter()
+        .find(|k| k.0.eq_ignore_ascii_case(name))
+        .map(|k| k.1)
+        .or_else(|| crate::controller::PAD_KEYS.iter().find(|k| k.0.eq_ignore_ascii_case(name)).map(|k| 0x1000 + k.1.trailing_zeros() as u16))
 }
 
 #[cfg(windows)]
 pub fn vk_down(vk: u16) -> bool {
+    if vk >= 0x1000 {
+        return crate::controller::PAD_DOWN.load(std::sync::atomic::Ordering::Relaxed) & (1u64 << (vk - 0x1000)) != 0;
+    }
     unsafe { (windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
 }
 
@@ -653,6 +659,17 @@ pub fn update(app: &mut App, typing: bool) {
             if vk == 0x01 || vk == 0x1B {
                 continue;
             }
+            if vk_down(vk) {
+                now_down.push(vk);
+                if !keys.iter().any(|k| k == name) && keys.len() < 2 {
+                    keys.push(name.to_string());
+                    any = true;
+                }
+            }
+        }
+        // Controller buttons can be recorded too (VTS "controller hotkeys").
+        for &(name, bit) in crate::controller::PAD_KEYS.iter() {
+            let vk = 0x1000 + bit.trailing_zeros() as u16;
             if vk_down(vk) {
                 now_down.push(vk);
                 if !keys.iter().any(|k| k == name) && keys.len() < 2 {

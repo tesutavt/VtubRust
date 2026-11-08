@@ -153,6 +153,7 @@ pub struct App {
     pub mic_level: f32,
     pub mic: Option<crate::lipsync::Mic>,
     pub mic_devices: Vec<(String, String)>,
+    pub pads: crate::controller::Controllers,
     /// Name of the loaded effect preset ("" = none).
     pub vfx_preset: String,
     /// Effect fade: (from, to, elapsed, duration).
@@ -323,6 +324,7 @@ impl App {
             mic_level: 0.0,
             mic: None,
             mic_devices: Vec::new(),
+            pads: Default::default(),
             vfx_preset: String::new(),
             vfx_fade: None,
             editor: None,
@@ -1325,6 +1327,9 @@ impl App {
         self.time += dt;
         self.update_tracking();
         self.update_voice();
+        let pad_ui = self.ui.settings_open && self.ui.tab == crate::ui::Tab::General;
+        self.pads.poll(self.settings.controller_mode, &self.settings.controller_id, pad_ui);
+        self.pads.write_inputs(&mut self.inputs);
         crate::api::apply_injections(self);
         self.update_mouse();
         self.update_tobii();

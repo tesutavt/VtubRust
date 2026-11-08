@@ -197,6 +197,9 @@ pub struct Settings {
     pub vfx_restricted: bool,
     /// Microphone lipsync (VTS "Advanced Lipsync").
     pub mic: crate::lipsync::MicCfg,
+    /// Controller input: 0 = no controller, 1 = all controllers, 2 = the selected one.
+    pub controller_mode: u8,
+    pub controller_id: String,
     /// VTS effect values by config enum ID (VTS EffectConfigs). Old-format "vfx" data is ignored.
     #[serde(rename = "vfx_vts")]
     pub vfx: crate::vfx::Values,
@@ -314,6 +317,8 @@ impl Default for Settings {
             vfx_on: false,
             vfx_restricted: false,
             mic: Default::default(),
+            controller_mode: 0,
+            controller_id: String::new(),
             vfx: Default::default(),
             smooth_masks: false,
             mask_atlas: 2048,

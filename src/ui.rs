@@ -1137,7 +1137,7 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
             mouse_grid(ui, mx, my);
         });
     });
-    stub_card(ui, tr("Ввод с контроллера"), &["Использовать контроллер"], "Отключено");
+    crate::ui_hotkeys::controller_card(app, ui);
     stub_card(ui, tr("Звуковые эффекты"), &["Воспроизводить в приложении", "Отправлять в OBS"], "");
     crate::ui_hotkeys::mic_card(app, ui);
     crate::ui_hotkeys::twitch_card(app, ui);
