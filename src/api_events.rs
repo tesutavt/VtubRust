@@ -58,15 +58,24 @@ fn convex_hull(mut p: Vec<[f32; 2]>) -> Vec<[f32; 2]> {
         return p;
     }
     let cross = |o: [f32; 2], a: [f32; 2], b: [f32; 2]| (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-    let mut h: Vec<[f32; 2]> = Vec::new();
-    for &q in p.iter().chain(p.iter().rev().skip(1)) {
-        while h.len() >= 2 && cross(h[h.len() - 2], h[h.len() - 1], q) <= 0.0 {
-            h.pop();
+    let mut lower: Vec<[f32; 2]> = Vec::new();
+    for &q in &p {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], q) <= 0.0 {
+            lower.pop();
         }
-        h.push(q);
+        lower.push(q);
     }
-    h.pop();
-    h
+    let mut upper: Vec<[f32; 2]> = Vec::new();
+    for &q in p.iter().rev() {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], q) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(q);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
 }
 
 pub fn model_outline(app: &App) -> Option<Value> {
