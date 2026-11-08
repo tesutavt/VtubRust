@@ -339,6 +339,7 @@ fn scene_input(app: &mut App, ctx: &Context) {
         )
     });
     let over_ui = ctx.is_pointer_over_area();
+    let ctrl = ctx.input(|i| i.modifiers.ctrl);
 
     if let Some(d) = app.ui.drag {
         if down {
@@ -367,11 +368,23 @@ fn scene_input(app: &mut App, ctx: &Context) {
             }
         }
         if released || !down {
-            // Like VTS: an item dropped onto the model sticks to the spot it was dropped on.
             if let Drag::Item { id, .. } = d {
-                if let (Some(it), Some(a)) = (app.items.iter_mut().find(|i| i.id == id), &app.avatar) {
-                    it.pin = None;
-                    it.pin_to(a);
+                let (vw, vh) = app.viewport();
+                let off_screen = app.items.iter().find(|i| i.id == id).map(|i| i.xf.pos[0].abs() > vw / 2.0 || i.xf.pos[1].abs() > vh / 2.0).unwrap_or(false);
+                if off_screen {
+                    // VTS: dropping an item off-screen deletes it.
+                    app.items.retain(|i| i.id != id);
+                    app.ui.selected = None;
+                } else if let Some(it) = app.items.iter_mut().find(|i| i.id == id) {
+                    // VTS: an item dropped onto the model sticks to the uppermost ArtMesh under its centre.
+                    if let Some(a) = &app.avatar {
+                        it.pin = None;
+                        it.pin_to(a);
+                    }
+                    // VTS: double-click an item to lock / unlock it.
+                    if dbl {
+                        it.locked = !it.locked;
+                    }
                 }
             }
             app.ui.drag = None;
@@ -409,7 +422,10 @@ fn scene_input(app: &mut App, ctx: &Context) {
             Hit::Item(k) => {
                 let it = &mut app.items[k];
                 app.ui.selected = Some(it.id);
-                if !it.locked {
+                if ctrl && pp && !it.locked {
+                    // VTS: Ctrl + click flips an item.
+                    it.xf.flip = !it.xf.flip;
+                } else if !it.locked {
                     let repin = it.pin.take().is_some();
                     app.ui.drag = Some(Drag::Item { id: it.id, rotate: sp, repin });
                 }
@@ -421,6 +437,15 @@ fn scene_input(app: &mut App, ctx: &Context) {
                 }
             }
             Hit::Nothing => app.ui.selected = None,
+        }
+    }
+    // Locked items aren't dragged, so their double click arrives here: unlock (VTS).
+    if dbl {
+        if let Hit::Item(k) = hit {
+            if app.items[k].locked {
+                app.items[k].locked = false;
+                app.save();
+            }
         }
     }
     // egui reports a double click on the release of the second click.

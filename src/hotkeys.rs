@@ -346,9 +346,9 @@ pub const ACTIONS: &[(&str, &str, bool, bool)] = &[
     ("ToggleTracker", "Вкл./выкл. трекер", true, false),
     ("ToggleTwitchFeature", "Вкл./выкл. функцию Twitch", true, true),
     ("LoadEffectPreset", "Загрузить пресет эффектов", true, true),
-    ("ToggleLive2DEditorParameterSync", "Синхронизация параметров с Live2D Editor API", false, false),
-    ("RunWebItemAction", "Запустить действие веб-элемента", false, false),
-    ("ToggleModelVolume", "Toggle Model Volume", false, false),
+    ("ToggleLive2DEditorAPI", "Синхронизация параметров с Live2D Editor API", false, false),
+    ("WebItemAction", "Запустить действие веб-элемента", false, false),
+    ("ToggleModelSound", "Toggle Model Volume", false, false),
     ("ToggleUI", "Показать/скрыть интерфейс (rigrs)", true, false),
 ];
 
@@ -420,34 +420,39 @@ pub fn detect_gesture(h: &crate::tracking::Hand) -> &'static str {
 
 // ------------------------------------------------------------------ key names (VTS / Unity style)
 
-/// (name used in the JSON, Windows virtual-key code)
+/// (name used in the JSON, Windows virtual-key code).
+/// The first part is exactly VTube Studio's key list (Files/RestrictedRawKey.cs), so recorded
+/// combinations are written with VTS names; the rest are extra keys rigrs also accepts.
 pub const KEYS: &[(&str, u16)] = &[
+    ("LeftMouseButton", 0x01), ("RightMouseButton", 0x02), ("MiddleMouseButton", 0x04), ("Tab", 0x09), ("CapsLock", 0x14),
+    ("Escape", 0x1B), ("Space", 0x20), ("Left", 0x25), ("Up", 0x26), ("Right", 0x27), ("Down", 0x28), ("Print", 0x2A),
+    ("Delete", 0x2E), ("PageUp", 0x21), ("PageDown", 0x22),
+    ("N0", 0x30), ("N1", 0x31), ("N2", 0x32), ("N3", 0x33), ("N4", 0x34), ("N5", 0x35), ("N6", 0x36), ("N7", 0x37), ("N8", 0x38), ("N9", 0x39),
     ("A", 0x41), ("B", 0x42), ("C", 0x43), ("D", 0x44), ("E", 0x45), ("F", 0x46), ("G", 0x47), ("H", 0x48), ("I", 0x49),
     ("J", 0x4A), ("K", 0x4B), ("L", 0x4C), ("M", 0x4D), ("N", 0x4E), ("O", 0x4F), ("P", 0x50), ("Q", 0x51), ("R", 0x52),
     ("S", 0x53), ("T", 0x54), ("U", 0x55), ("V", 0x56), ("W", 0x57), ("X", 0x58), ("Y", 0x59), ("Z", 0x5A),
-    ("N0", 0x30), ("N1", 0x31), ("N2", 0x32), ("N3", 0x33), ("N4", 0x34), ("N5", 0x35), ("N6", 0x36), ("N7", 0x37), ("N8", 0x38), ("N9", 0x39),
+    ("LeftWindows", 0x5B), ("RightWindows", 0x5C),
     ("Numpad0", 0x60), ("Numpad1", 0x61), ("Numpad2", 0x62), ("Numpad3", 0x63), ("Numpad4", 0x64), ("Numpad5", 0x65), ("Numpad6", 0x66),
     ("Numpad7", 0x67), ("Numpad8", 0x68), ("Numpad9", 0x69), ("Multiply", 0x6A), ("Add", 0x6B), ("Subtract", 0x6D), ("Decimal", 0x6E), ("Divide", 0x6F),
     ("F1", 0x70), ("F2", 0x71), ("F3", 0x72), ("F4", 0x73), ("F5", 0x74), ("F6", 0x75), ("F7", 0x76), ("F8", 0x77), ("F9", 0x78), ("F10", 0x79),
     ("F11", 0x7A), ("F12", 0x7B), ("F13", 0x7C), ("F14", 0x7D), ("F15", 0x7E), ("F16", 0x7F), ("F17", 0x80), ("F18", 0x81), ("F19", 0x82), ("F20", 0x83),
-    ("F21", 0x84), ("F22", 0x85), ("F23", 0x86), ("F24", 0x87),
-    ("Tab", 0x09), ("Space", 0x20), ("Return", 0x0D), ("Backspace", 0x08), ("Delete", 0x2E), ("Insert", 0x2D), ("Home", 0x24), ("End", 0x23),
-    ("PageUp", 0x21), ("PageDown", 0x22), ("UpArrow", 0x26), ("DownArrow", 0x28), ("LeftArrow", 0x25), ("RightArrow", 0x27),
-    ("LeftShift", 0xA0), ("RightShift", 0xA1), ("LeftControl", 0xA2), ("RightControl", 0xA3), ("LeftAlt", 0xA4), ("RightAlt", 0xA5),
-    ("CapsLock", 0x14), ("Pause", 0x13), ("ScrollLock", 0x91), ("Print", 0x2C),
+    ("F21", 0x84), ("F22", 0x85), ("F23", 0x86), ("F24", 0x87), ("NumLock", 0x90), ("ScrollLock", 0x91),
+    ("LeftShift", 0xA0), ("RightShift", 0xA1), ("LeftControl", 0xA2), ("RightControl", 0xA3), ("Alt", 0xA4),
+    // ---- extra keys (not in VTS)
+    ("RightAlt", 0xA5), ("Return", 0x0D), ("Backspace", 0x08), ("Insert", 0x2D), ("Home", 0x24), ("End", 0x23), ("Pause", 0x13),
     ("Semicolon", 0xBA), ("Equals", 0xBB), ("Comma", 0xBC), ("Minus", 0xBD), ("Period", 0xBE), ("Slash", 0xBF), ("BackQuote", 0xC0),
-    ("LeftBracket", 0xDB), ("Backslash", 0xDC), ("RightBracket", 0xDD), ("Quote", 0xDE),
-    ("Mouse3", 0x04), ("Mouse4", 0x05), ("Mouse5", 0x06),
+    ("LeftBracket", 0xDB), ("Backslash", 0xDC), ("RightBracket", 0xDD), ("Quote", 0xDE), ("Mouse4", 0x05), ("Mouse5", 0x06),
 ];
 
 fn vk_of(name: &str) -> Option<u16> {
-    // A few aliases written by older VTS versions.
+    // Aliases written by older VTS versions / earlier rigrs builds.
     let name = match name {
         "Alpha0" => "N0", "Alpha1" => "N1", "Alpha2" => "N2", "Alpha3" => "N3", "Alpha4" => "N4",
         "Alpha5" => "N5", "Alpha6" => "N6", "Alpha7" => "N7", "Alpha8" => "N8", "Alpha9" => "N9",
         "Keypad0" => "Numpad0", "Keypad1" => "Numpad1", "Keypad2" => "Numpad2", "Keypad3" => "Numpad3", "Keypad4" => "Numpad4",
         "Keypad5" => "Numpad5", "Keypad6" => "Numpad6", "Keypad7" => "Numpad7", "Keypad8" => "Numpad8", "Keypad9" => "Numpad9",
-        "Enter" => "Return", "Up" => "UpArrow", "Down" => "DownArrow", "Left" => "LeftArrow", "Right" => "RightArrow",
+        "Enter" => "Return", "UpArrow" => "Up", "DownArrow" => "Down", "LeftArrow" => "Left", "RightArrow" => "Right",
+        "LeftAlt" => "Alt", "Mouse3" => "MiddleMouseButton", "Esc" => "Escape",
         n => n,
     };
     KEYS.iter().find(|k| k.0.eq_ignore_ascii_case(name)).map(|k| k.1)
@@ -518,6 +523,9 @@ pub fn update(app: &mut App, typing: bool) {
         let mut keys = keys;
         let mut now_down = Vec::new();
         for &(name, vk) in KEYS {
+            if vk == 0x01 || vk == 0x1B {
+                continue;
+            }
             if vk_down(vk) {
                 now_down.push(vk);
                 if !keys.iter().any(|k| k == name) && keys.len() < 3 {
@@ -665,7 +673,12 @@ pub fn trigger(app: &mut App, id_or_name: &str, src: Source) -> bool {
                 }
             }
         }
-        "ChangeIdleAnimation" => app.actions.push(Action::SetIdle((!h.file.is_empty()).then(|| h.file.clone()))),
+        // VTS: changes the looping idle animation without saving it into the model config.
+        "ChangeIdleAnimation" => {
+            if let Some(a) = app.avatar.as_mut() {
+                a.set_idle((!h.file.is_empty()).then_some(h.file.as_str()));
+            }
+        }
         "ToggleExpression" => {
             if let Some(a) = app.avatar.as_mut() {
                 if let Some(e) = a.expressions.iter_mut().find(|e| e.file.ends_with(&h.file) || (!h.file.is_empty() && e.name == h.file)) {

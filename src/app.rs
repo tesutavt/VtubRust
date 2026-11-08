@@ -1333,6 +1333,9 @@ impl App {
         match a {
             Action::LoadModel(e) => self.load_model(&e),
             Action::UnloadModel => {
+                if let Some(a) = &self.avatar {
+                    self.api_events.push(("ModelLoadedEvent".into(), serde_json::json!({ "modelLoaded": false, "modelName": a.name, "modelID": a.model_id })));
+                }
                 self.remember_avatar_xf();
                 self.avatar = None;
                 self.settings.last_model = None;
@@ -1361,6 +1364,11 @@ impl App {
             Action::RemoveItem(id) => self.items.retain(|i| i.id != id),
             Action::ClearItems => self.items.clear(),
             Action::SetBackground(b) => {
+                let name = match &b {
+                    Background::Image(p) => std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                    other => format!("{other:?}"),
+                };
+                self.api_events.push(("BackgroundChangedEvent".into(), serde_json::json!({ "backgroundName": name })));
                 self.set_background(b);
                 self.save();
             }
