@@ -303,9 +303,11 @@ pub fn parse_phone(b: &[u8]) -> Option<(FaceFrame, i32)> {
         }
     }
     f.eye_open = [1.0 - f.bs[bs::EYE_BLINK_R], 1.0 - f.bs[bs::EYE_BLINK_L]];
-    // Unity euler angles in degrees (0..360): x = pitch (down positive), y = yaw, z = roll.
+    // Degrees (0..360). Per DenchiSoft's official example (VTubeStudioReceiveDataExample.cs:
+    // `Quaternion.Euler(-Rotation.y, -Rotation.x, Rotation.z)`): `x` is the left/right turn
+    // (yaw) and `y` the up/down nod (pitch), both negated for Unity; `z` is roll.
     let r = vec3(&v["Rotation"]);
-    f.euler = [-wrap_deg(r[0]), wrap_deg(r[1]), wrap_deg(r[2])];
+    f.euler = [wrap_deg(r[1]), -wrap_deg(r[0]), wrap_deg(r[2])];
     let p = vec3(&v["Position"]);
     f.translation = [p[0] * 0.1, p[1] * 0.1, p[2] * 0.1];
     Some((f, v["Hotkey"].as_i64().unwrap_or(-1) as i32))
@@ -739,29 +741,142 @@ pub fn list_caps(exe: &Path, camera: i32) -> Vec<CamCap> {
 /// Android "USB tethering").
 pub const USB_TETHER_PHONES: [&str; 3] = ["172.20.10.1", "192.168.42.129", "192.168.42.1"];
 
-/// Finds phones running the VTube Studio app ("3rd Party PC Clients" on): broadcasts a
-/// short data request and collects who answers. `extra` are addresses tried directly
-/// (USB tethering). Blocks for about `wait`.
+/// An IPv4 network interface of this computer.
+#[derive(Clone, Debug)]
+pub struct NetIf {
+    pub ip: std::net::Ipv4Addr,
+    pub prefix: u8,
+    pub name: String,
+    /// VPN / virtual adapter (Radmin, ZeroTier, Tailscale, Hyper-V, VirtualBox, ...).
+    pub virtual_: bool,
+}
+
+impl NetIf {
+    /// Subnet broadcast address (e.g. 192.168.1.255 for a /24).
+    pub fn broadcast(&self) -> std::net::Ipv4Addr {
+        let ip = u32::from(self.ip);
+        let mask = if self.prefix == 0 { 0 } else { u32::MAX << (32 - self.prefix.min(32)) };
+        std::net::Ipv4Addr::from(ip | !mask)
+    }
+
+    /// Every host address of the subnet (empty for subnets larger than /22).
+    pub fn hosts(&self) -> Vec<std::net::Ipv4Addr> {
+        if self.prefix < 22 || self.prefix > 30 {
+            return Vec::new();
+        }
+        let mask = u32::MAX << (32 - self.prefix);
+        let net = u32::from(self.ip) & mask;
+        let me = u32::from(self.ip);
+        (net + 1..(net | !mask)).filter(|&a| a != me).map(std::net::Ipv4Addr::from).collect()
+    }
+}
+
+fn is_virtual_name(n: &str) -> bool {
+    let n = n.to_lowercase();
+    ["vpn", "tun", "radmin", "zerotier", "tailscale", "hamachi", "virtual", "vmware", "hyper-v", "vethernet", "tap-", "wintun", "wireguard", "loopback", "npcap", "bluetooth"]
+        .iter()
+        .any(|k| n.contains(k))
+}
+
+/// Active IPv4 interfaces (no loopback), real adapters first.
+#[cfg(windows)]
+pub fn interfaces() -> Vec<NetIf> {
+    use windows::Win32::NetworkManagement::IpHelper::{GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH};
+    use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+    use windows::Win32::Networking::WinSock::{AF_INET, SOCKADDR_IN};
+    let mut out = Vec::new();
+    let mut size: u32 = 32 * 1024;
+    for _ in 0..3 {
+        let mut buf = vec![0u64; (size as usize).div_ceil(8)];
+        let p = buf.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH;
+        let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+        let r = unsafe { GetAdaptersAddresses(AF_INET.0 as u32, flags, None, Some(p), &mut size) };
+        if r == 111 {
+            continue; // ERROR_BUFFER_OVERFLOW: `size` now holds the needed size
+        }
+        if r != 0 {
+            return out;
+        }
+        let mut cur = p as *const IP_ADAPTER_ADDRESSES_LH;
+        while !cur.is_null() {
+            let ad = unsafe { &*cur };
+            cur = ad.Next;
+            if ad.OperStatus != IfOperStatusUp || ad.IfType == 24 {
+                continue;
+            }
+            let desc = unsafe { ad.Description.to_string().unwrap_or_default() };
+            let fname = unsafe { ad.FriendlyName.to_string().unwrap_or_default() };
+            let mut ua = ad.FirstUnicastAddress;
+            while !ua.is_null() {
+                let u = unsafe { &*ua };
+                ua = u.Next;
+                let sa = u.Address.lpSockaddr;
+                if sa.is_null() || unsafe { (*sa).sa_family } != AF_INET {
+                    continue;
+                }
+                let sin = unsafe { &*(sa as *const SOCKADDR_IN) };
+                let ip = std::net::Ipv4Addr::from(u32::from_be(unsafe { sin.sin_addr.S_un.S_addr }));
+                if ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() {
+                    continue;
+                }
+                out.push(NetIf { ip, prefix: u.OnLinkPrefixLength, name: fname.clone(), virtual_: is_virtual_name(&desc) || is_virtual_name(&fname) });
+            }
+        }
+        break;
+    }
+    out.sort_by_key(|i| i.virtual_);
+    out
+}
+
+#[cfg(not(windows))]
+pub fn interfaces() -> Vec<NetIf> {
+    local_ips_probe()
+        .into_iter()
+        .filter_map(|s| s.parse().ok())
+        .map(|ip| NetIf { ip, prefix: 24, name: String::new(), virtual_: false })
+        .collect()
+}
+
+/// Finds phones running the VTube Studio app ("3rd Party PC Clients" on). Windows sends a
+/// 255.255.255.255 broadcast out of one adapter only (often a VPN one), so the request goes
+/// to every adapter's subnet broadcast and, for normal home subnets, to every address
+/// directly (also gets through Wi-Fi networks that drop broadcasts). `extra` are addresses
+/// tried directly (USB tethering). Blocks for about `wait`.
 pub fn discover_phones(phone_port: u16, extra: &[&str], wait: Duration) -> Vec<(std::net::IpAddr, bool)> {
     let Ok(sock) = UdpSocket::bind(("0.0.0.0", 0)) else { return Vec::new() };
     let _ = sock.set_broadcast(true);
-    let _ = sock.set_read_timeout(Some(Duration::from_millis(100)));
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(20)));
     let port = sock.local_addr().map(|a| a.port()).unwrap_or(0);
     let req = serde_json::json!({ "messageType": "iOSTrackingDataRequest", "time": 0.5, "sentBy": "rigrs-discovery", "ports": [port] }).to_string();
-    let mut targets: Vec<String> = vec!["255.255.255.255".into()];
-    targets.extend(extra.iter().map(|s| s.to_string()));
+    let mut targets: Vec<std::net::IpAddr> = vec![std::net::Ipv4Addr::BROADCAST.into()];
+    targets.extend(extra.iter().filter_map(|s| s.parse::<std::net::IpAddr>().ok()));
+    let ifs = interfaces();
+    for i in &ifs {
+        targets.push(i.broadcast().into());
+    }
+    // Direct sweep: real adapters only (a VPN subnet can be large and has no phone on it).
+    let sweep: Vec<std::net::IpAddr> = ifs.iter().filter(|i| !i.virtual_).flat_map(|i| i.hosts()).map(Into::into).collect();
+    targets.dedup();
     let t0 = Instant::now();
     let mut found: Vec<(std::net::IpAddr, bool)> = Vec::new();
     let mut buf = vec![0u8; 65536];
-    let mut last = Instant::now() - Duration::from_secs(1);
+    let mut last = Instant::now() - Duration::from_secs(5);
+    let mut swept = 0usize;
     while t0.elapsed() < wait {
-        if last.elapsed() > Duration::from_millis(500) {
+        if last.elapsed() > Duration::from_millis(700) {
             for t in &targets {
-                let _ = sock.send_to(req.as_bytes(), (t.as_str(), phone_port));
+                let _ = sock.send_to(req.as_bytes(), (*t, phone_port));
             }
             last = Instant::now();
         }
-        if let Ok((n, from)) = sock.recv_from(&mut buf) {
+        // Spread the sweep over the wait time instead of one burst.
+        let end = (swept + 64).min(sweep.len());
+        for t in &sweep[swept..end] {
+            let _ = sock.send_to(req.as_bytes(), (*t, phone_port));
+        }
+        swept = if end >= sweep.len() { 0 } else { end };
+        // Drain everything that arrived (a found phone keeps streaming for 0.5 s).
+        while let Ok((n, from)) = sock.recv_from(&mut buf) {
             if parse_phone(&buf[..n]).is_some() && !found.iter().any(|f| f.0 == from.ip()) {
                 let usb = extra.iter().any(|e| *e == from.ip().to_string());
                 found.push((from.ip(), usb));
@@ -771,8 +886,19 @@ pub fn discover_phones(phone_port: u16, extra: &[&str], wait: Duration) -> Vec<(
     found
 }
 
-/// This computer's IPv4 addresses that a phone can reach (best effort, no packets sent).
+/// This computer's IPv4 addresses for the phone app, real adapters first (VPN ones last).
 pub fn local_ips() -> Vec<String> {
+    let mut v: Vec<String> = interfaces().into_iter().map(|i| i.ip.to_string()).collect();
+    for ip in local_ips_probe() {
+        if !v.contains(&ip) {
+            v.push(ip);
+        }
+    }
+    v
+}
+
+/// Fallback: the source address the OS would use for a few typical destinations.
+fn local_ips_probe() -> Vec<String> {
     let mut v = Vec::new();
     for probe in ["8.8.8.8:80", "192.168.1.1:80", "10.0.0.1:80", "172.20.10.1:80", "192.168.42.129:80"] {
         if let Ok(s) = UdpSocket::bind("0.0.0.0:0") {
@@ -1036,14 +1162,29 @@ mod phone_tests {
     }
 
     #[test]
+    fn network_interfaces() {
+        let ifs = interfaces();
+        for i in &ifs {
+            println!("IF {} /{} bcast {} virtual={} hosts={} name={}", i.ip, i.prefix, i.broadcast(), i.virtual_, i.hosts().len(), i.name);
+        }
+        assert!(!ifs.is_empty(), "no network interfaces found");
+        let t = NetIf { ip: "192.168.1.37".parse().unwrap(), prefix: 24, name: String::new(), virtual_: false };
+        assert_eq!(t.broadcast().to_string(), "192.168.1.255");
+        assert_eq!(t.hosts().len(), 253);
+    }
+
+    #[test]
     fn parse_phone_packet() {
-        let data = br#"{"FaceFound":true,"Hotkey":3,"Rotation":{"x":350,"y":10,"z":5},"Position":{"x":1,"y":2,"z":3},"BlendShapes":[{"k":"JawOpen","v":0.5},{"k":"EyeBlinkLeft","v":1.0},{"k":"TongueOut","v":0.3}]}"#;
+        // Head turned (x = yaw 20°), nodding (y = pitch 10°), tilted (z = roll 5°).
+        let data = br#"{"FaceFound":true,"Hotkey":3,"Rotation":{"x":20,"y":10,"z":5},"Position":{"x":1,"y":2,"z":3},"BlendShapes":[{"k":"JawOpen","v":0.5},{"k":"EyeBlinkLeft","v":1.0},{"k":"TongueOut","v":0.3}]}"#;
         let (f, hk) = parse_phone(data).unwrap();
         assert_eq!(hk, 3);
         assert!(f.success);
         assert_eq!(f.bs[bs::JAW_OPEN], 0.5);
         assert_eq!(f.tongue, 0.3);
-        assert!((f.euler[0] - 10.0).abs() < 1e-3);
+        assert!((f.euler[0] - 10.0).abs() < 1e-3, "pitch comes from Rotation.y");
+        assert!((f.euler[1] + 20.0).abs() < 1e-3, "yaw comes from Rotation.x");
+        assert!((f.euler[2] - 5.0).abs() < 1e-3, "roll comes from Rotation.z");
         assert_eq!(f.eye_open[1], 0.0);
     }
 
