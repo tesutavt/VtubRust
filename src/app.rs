@@ -89,6 +89,8 @@ pub struct App {
     pub bg_sprite: Option<(String, Sprite)>,
 
     pub tracker: Option<Tracker>,
+    /// VNet-style collab session.
+    pub net: Option<crate::net::Session>,
     pub tracker_error: Option<String>,
     pub tracking: bool,
     pub inputs: Inputs,
@@ -289,6 +291,7 @@ impl App {
             next_id: 1,
             bg_sprite: None,
             tracker: None,
+            net: None,
             tracker_error: None,
             tracking: false,
             inputs: NEUTRAL,
@@ -729,7 +732,7 @@ impl App {
         }
     }
 
-    fn make_item(&mut self, source: &Path) -> Result<Item> {
+    pub(crate) fn make_item(&mut self, source: &Path) -> Result<Item> {
         let (vw, vh) = self.viewport();
         let name = source.file_name().unwrap_or_default().to_string_lossy().trim_end_matches(".model3.json").to_string();
         let id = self.next_id;
@@ -1538,6 +1541,8 @@ impl App {
         };
         let fx_screen = self.fx.screen;
 
+        crate::net::pump(self, dt);
+
         // Simulation
         let physics = self.settings.physics;
         if let Some(a) = &mut self.avatar {
@@ -1590,6 +1595,11 @@ impl App {
         if render {
             for it in &mut self.items {
                 it.upload(&self.gpu, vw, vh, masks.as_mut());
+            }
+            if let Some(n) = &mut self.net {
+                for it in n.scene_items_mut() {
+                    it.upload(&self.gpu, vw, vh, masks.as_mut());
+                }
             }
             if let Some(a) = &mut self.avatar {
                 a.upload(&self.gpu, vw, vh, masks.as_mut());
@@ -1661,6 +1671,9 @@ impl App {
             for it in &self.items {
                 it.draw_masks(&mut mp, al);
             }
+            for it in self.net.as_ref().map(|n| n.scene_items()).unwrap_or_default() {
+                it.draw_masks(&mut mp, al);
+            }
             if let Some(a) = &self.avatar {
                 a.draw_masks(&mut mp, al);
             }
@@ -1674,6 +1687,7 @@ impl App {
         }
         let mut draw_calls = 0;
         let bg = self.bg_sprite.as_ref().map(|(_, s)| s);
+        let net_items: Vec<&Item> = self.net.as_ref().map(|n| n.scene_items()).unwrap_or_default();
         if let Some(f) = &frame {
             let view = f.texture.create_view(&Default::default());
             match vfx.as_deref_mut() {
@@ -1681,18 +1695,18 @@ impl App {
                     // Model layer (transparent) and background layer, combined by the effects.
                     {
                         let mut p = Painter::new(gpu, &mut enc, v.scene_view(0).unwrap(), &gpu.depth, wgpu::Color::TRANSPARENT);
-                        draw_scene(&mut p, None, &self.items, self.avatar.as_ref());
+                        draw_scene(&mut p, None, &self.items, &net_items, self.avatar.as_ref());
                         draw_calls = p.draw_calls;
                     }
                     {
                         let mut p = Painter::new(gpu, &mut enc, v.bg_view(0).unwrap(), &gpu.depth, clear_col);
-                        draw_scene(&mut p, bg, &[], None);
+                        draw_scene(&mut p, bg, &[], &[], None);
                     }
                     v.run(gpu, &mut enc, 0, &view, &vfx_vals, &passes, vfx_inputs);
                 }
                 None => {
                     let mut p = Painter::new(gpu, &mut enc, &view, &gpu.depth, clear_col);
-                    draw_scene(&mut p, bg, &self.items, self.avatar.as_ref());
+                    draw_scene(&mut p, bg, &self.items, &net_items, self.avatar.as_ref());
                     draw_calls = p.draw_calls;
                 }
             }
@@ -1721,17 +1735,17 @@ impl App {
                     Some(v) if v.scene_view(slot).is_some() => {
                         {
                             let mut p = Painter::new(gpu, &mut enc, v.scene_view(slot).unwrap(), &out.offscreen.depth, wgpu::Color::TRANSPARENT);
-                            draw_scene(&mut p, None, &self.items, self.avatar.as_ref());
+                            draw_scene(&mut p, None, &self.items, &net_items, self.avatar.as_ref());
                         }
                         {
                             let mut p = Painter::new(gpu, &mut enc, v.bg_view(slot).unwrap(), &out.offscreen.depth, cc);
-                            draw_scene(&mut p, bgx, &[], None);
+                            draw_scene(&mut p, bgx, &[], &[], None);
                         }
                         v.run(gpu, &mut enc, slot, &out.offscreen.scene_view, &vfx_vals, &passes, vfx_inputs);
                     }
                     _ => {
                         let mut p = Painter::new(gpu, &mut enc, &out.offscreen.scene_view, &out.offscreen.depth, cc);
-                        draw_scene(&mut p, bgx, &self.items, self.avatar.as_ref());
+                        draw_scene(&mut p, bgx, &self.items, &net_items, self.avatar.as_ref());
                     }
                 }
                 // Twitch Emote Dropper / flying chat on top of the scene, mapped like the model
@@ -1785,7 +1799,7 @@ impl App {
                 {
                     let clear = if transparent { wgpu::Color::TRANSPARENT } else { self.clear_color() };
                     let mut p = Painter::new(gpu, &mut enc, &off.scene_view, &off.depth, clear);
-                    draw_scene(&mut p, if transparent { None } else { bg }, &self.items, self.avatar.as_ref());
+                    draw_scene(&mut p, if transparent { None } else { bg }, &self.items, &net_items, self.avatar.as_ref());
                 }
                 off.set_mirror(&gpu.queue, false);
                 gpu.unpremultiply(&mut enc, &off);

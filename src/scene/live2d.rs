@@ -160,6 +160,9 @@ pub struct Live2D {
     pub texture_size: u32,
     /// Multiplicative colour from the lighting overlay.
     pub tint: [f32; 3],
+    /// Collab: parameter values received from another participant. When set, motions,
+    /// tracking mapping and expressions are skipped (they already happened on their side).
+    pub net_params: Option<Vec<f32>>,
     /// Smoothed head-follow offset: x, y (px) and relative zoom.
     move_off: [f32; 3],
     pose: Option<Pose>,
@@ -402,6 +405,7 @@ impl Live2D {
             texture_count: tex_count,
             texture_size: tex_size,
             tint: [1.0; 3],
+            net_params: None,
             pose,
             mapping,
             file_rules,
@@ -562,6 +566,22 @@ impl Live2D {
         let m = &mut self.model;
         m.reset_pose();
         self.anim_events.clear();
+        if let Some(np) = &self.net_params {
+            let n = np.len().min(m.params().len());
+            for (i, &v) in np[..n].iter().enumerate() {
+                m.set_param(i, v);
+            }
+            if let Some(p) = &self.pose {
+                p.apply(m);
+            }
+            if physics_on && self.physics_enabled {
+                if let Some(ph) = &mut self.physics {
+                    ph.evaluate(m, dt);
+                }
+            }
+            m.update();
+            return;
+        }
         let lost = !tracking && self.lost_motion.is_some();
         let idle_name = if lost { self.cfg.lost_idle.clone() } else { self.idle.clone().unwrap_or_default() };
         let mo = if lost { &mut self.lost_motion } else { &mut self.motion };

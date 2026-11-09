@@ -84,6 +84,22 @@ The tracker runs as a separate process (OpenSeeFace / Mediapipe); its load is sh
 
 🎬 A demo video (about 50 seconds) is attached to the [latest release](https://github.com/tesutavt/VtubRust/releases/latest).
 
+## 🆕 dev: NVIDIA / phone tracking, VBridger, VNet-style collab
+
+**Trackers** (Settings → Camera → Tracking quality):
+- **[RTX] NVIDIA Broadcast**: runs `ExpressionApp.exe` from VTube Studio's free *NVIDIA Broadcast Tracker* DLC (Windows, RTX 20xx+), the same way VTS does (UDP 9140, JSON with 53 ARKit-style expressions + head rotation). "Calibrate" also sends the NVIDIA neutral-face calibration; the coefficients are saved.
+- **[Phone] iPhone / Android**: the VTube Studio phone app's "3rd Party PC Clients" protocol (`iOSTrackingDataRequest` on UDP 21412), 52 ARKit blendshapes + tongue. The phone can feed VBridger at the same time; on-screen buttons 1-8 trigger hotkeys bound to ScreenButton 1-8.
+
+**VBridger / Perfect Sync**: with NVIDIA, phone or Mediapipe tracking every raw ARKit blendshape (`EyeBlinkLeft`, `JawOpen`, `MouthFunnel`, ...) and the VBridger-style combinations (`MouthPressLipOpen`, `MouthPuckerWiden`, `MouthShrug`, `CheekSquint`, `EyeSquint`, `BrowOuterUp`) are available as inputs, so models rigged for VBridger can map them by name. VBridger itself still works through the plugin API; a parameter it creates with the same name takes priority.
+
+**Collab (VNet-style multiplayer)**: purple buttons in the main menu, above "hide UI" (big = setup, small = session control). Host / join with nickname and password, up to 6 participants, Data FPS 10-60. Models and items are shared automatically (zipped, sent through the host, verified by hash, kept in a temporary cache; 150 files / 300 MB per model, 95 MB per file). Movement = Live2D parameters + model/item placement; receivers run physics and smooth with a per-participant buffer. Per participant: show model, show items, in front of my model, "you control position", fixed ordering. No Steam relay: the host must be reachable over TCP (LAN, port forwarding or Tailscale / ZeroTier / Radmin VPN), default port 25580.
+
+<p align="center">
+  <img src="screenshots/vnet_setup.png" width="49%"> <img src="screenshots/vnet_control.png" width="49%">
+  <img src="screenshots/tracker_select.png" width="49%"> <img src="screenshots/tracker_nvidia.png" width="49%">
+  <img src="screenshots/tracker_phone.png" width="49%"> <img src="screenshots/perfect_sync_vbridger.png" width="49%">
+</p>
+
 ## 🌟 Features
 
 - ✅ Live2D Cubism 3/4/5 rendering: physics, idle animations, expressions (`exp3`), poses, smooth or hard masks

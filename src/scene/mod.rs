@@ -333,13 +333,13 @@ fn place_of(layer: &str, order: i32, avatar: Option<&Live2D>) -> Place {
 
 /// What gets drawn, back to front: background, items behind the model, the model with items
 /// inserted between its layers, items in front of the model (VTS item order + layer pinning).
-pub fn draw_scene(p: &mut Painter, bg: Option<&Sprite>, items: &[Item], avatar: Option<&Live2D>) {
+pub fn draw_scene(p: &mut Painter, bg: Option<&Sprite>, items: &[Item], extra: &[&Item], avatar: Option<&Live2D>) {
     if let Some(b) = bg {
         b.draw(p);
     }
     // Pieces: (item, optional drawable range of a split Live2D item, placement).
     let mut pieces: Vec<(&Item, Option<std::ops::Range<usize>>, Place)> = Vec::new();
-    for it in items {
+    for it in items.iter().chain(extra.iter().copied()) {
         let split = match &it.body {
             Body::Live2D(l) if !it.cfg.split.is_empty() && (!it.cfg.split_front.is_empty() || !it.cfg.split_back.is_empty()) => l.order_pos(&it.cfg.split).map(|s| (s, l.order_len())),
             _ => None,

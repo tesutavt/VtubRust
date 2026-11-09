@@ -175,7 +175,7 @@ pub struct Settings {
     /// Local UDP port the phone sends to.
     pub phone_local_port: u16,
     /// VNet-style multiplayer.
-    //NETSETTINGS
+    pub net: crate::net::NetSettings,
     /// 0 = face, 1 = hands, 2 = face + hands
     pub track_type: u8,
     pub track_threads: u32,
@@ -319,7 +319,7 @@ impl Default for Settings {
             phone_ip: String::new(),
             phone_port: 21412,
             phone_local_port: 21413,
-            //NETDEFAULT
+            net: Default::default(),
             track_type: 0,
             track_threads: 1,
             track_port: 11573,

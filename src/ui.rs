@@ -46,6 +46,9 @@ pub struct UiState {
     last_strip: Strip,
     pub dialog: Dialog,
     pub settings_open: bool,
+    /// VNet-style collab: setup screen (big button) and session control screen (small button).
+    pub collab_open: bool,
+    pub collab_control: bool,
     pub tab: Tab,
     pub filter: String,
     pub selected: Option<u64>,
@@ -99,6 +102,8 @@ impl Default for UiState {
             last_strip: Strip::None,
             dialog: Dialog::None,
             settings_open: false,
+            collab_open: false,
+            collab_control: false,
             tab: Tab::General,
             filter: String::new(),
             selected: None,
@@ -326,6 +331,7 @@ pub fn run(app: &mut App, ctx: &Context) {
             Dialog::None => {}
         }
         item_panel(app, ctx);
+        crate::ui_net::collab_window(app, ctx);
     }
     let now_tab = (vis && app.ui.settings_open).then_some(app.ui.tab);
     if now_tab.is_some() && now_tab != app.ui.shown.0 {
@@ -658,6 +664,9 @@ fn toolbar(app: &mut App, ctx: &Context, e: f32) {
             if round_button(ui, "⚙", C_SET, 30.0, app.ui.settings_open, "Настройки").clicked() {
                 app.ui.settings_open = !app.ui.settings_open;
             }
+        });
+        ui.horizontal(|ui| {
+            crate::ui_net::main_buttons(app, ui);
         });
         ui.horizontal(|ui| {
             if round_button(ui, "👁", C_HIDE, 30.0, false, "Скрыть интерфейс (вернуть: Esc или двойной клик по пустому месту)").clicked() {
