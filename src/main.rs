@@ -19,6 +19,7 @@ mod i18n;
 mod ui_hotkeys;
 mod ui_items;
 mod ui_vts;
+mod updater;
 mod ui_model_extra;
 mod cubism;
 mod formats;
@@ -103,6 +104,9 @@ impl ApplicationHandler for Runner {
                 app.frame();
                 if app.quit {
                     app.shutdown();
+                    if app.restart_after_quit {
+                        crate::updater::restart();
+                    }
                     el.exit();
                 }
             }

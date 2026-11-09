@@ -170,6 +170,12 @@ pub struct App {
     cfg_snapshot: (u64, u64),
     pub ui_extra: crate::ui_model_extra::ModelExtraState,
     pub ui_vts: crate::ui_vts::VtsState,
+    pub updater: crate::updater::Updater,
+    /// Set when an update was installed: quit, then start the new exe.
+    pub restart_after_quit: bool,
+    /// The "new version" banner was closed for this session / the toast was shown.
+    pub update_banner_closed: bool,
+    update_toasted: bool,
     last: Instant,
     pub quit: bool,
     pub occluded: bool,
@@ -341,6 +347,10 @@ impl App {
             cfg_snapshot: (0, 0),
             ui_extra: Default::default(),
             ui_vts: Default::default(),
+            updater: Default::default(),
+            restart_after_quit: false,
+            update_banner_closed: false,
+            update_toasted: false,
             last: Instant::now(),
             quit: false,
             occluded: false,
@@ -385,6 +395,10 @@ impl App {
         }
         if app.settings.mic.on {
             app.set_mic(true);
+        }
+        crate::updater::cleanup_old();
+        if app.settings.update_check && std::env::var_os("RIGRS_DATA").is_none() || std::env::var_os("RIGRS_FAKE_VERSION").is_some() {
+            app.updater.check();
         }
         // Dev hook for screenshots/tests: RIGRS_OPEN_SETTINGS=general|camera|model|hotkeys
         if let Ok(t) = std::env::var("RIGRS_OPEN_SETTINGS") {
@@ -1438,6 +1452,24 @@ impl App {
         let dt = t0.duration_since(self.last).as_secs_f32().min(0.1);
         self.last = t0;
         self.time += dt;
+        if let crate::updater::State::Ready = self.updater.state() {
+            if !self.restart_after_quit {
+                self.restart_after_quit = true;
+                self.quit = true;
+            }
+        }
+        // Dev hook for the end-to-end update test: install as soon as an update is found.
+        if std::env::var_os("RIGRS_AUTO_UPDATE").is_some() {
+            if let crate::updater::State::Available(r) = self.updater.state() {
+                self.updater.install(r);
+            }
+        }
+        if !self.update_toasted {
+            if let crate::updater::State::Available(r) = self.updater.state() {
+                self.update_toasted = true;
+                self.toast(format!("{} {}", crate::i18n::tr("Доступна новая версия"), r.tag));
+            }
+        }
         self.update_tracking();
         self.update_voice();
         let pad_ui = self.ui.settings_open && self.ui.tab == crate::ui::Tab::General;
@@ -2067,7 +2099,7 @@ impl App {
             }
             Action::NewInstance => {
                 if let Ok(exe) = std::env::current_exe() {
-                    let _ = std::process::Command::new(exe).spawn();
+                    let _ = std::process::Command::new(exe).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
                 }
             }
             Action::ResetSettings => {

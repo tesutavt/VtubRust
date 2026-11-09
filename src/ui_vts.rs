@@ -207,6 +207,7 @@ fn frame_dialog(ctx: &Context, id: &str, title: &str, header: &str, add: impl Fn
 /// All VTS-style dialogs of this module.
 pub fn dialogs(app: &mut App, ctx: &Context) {
     controller_widget(app, ctx);
+    update_banner(app, ctx);
     let Some(d) = app.ui_vts.dlg else { return };
     match d {
         Dlg::SoundSettings => {
@@ -440,7 +441,7 @@ fn mesh_list(app: &mut App, ctx: &Context, kind: u8) {
     };
     let ids: Vec<String> = app.avatar.as_ref().map(|a| a.model.drawables.iter().map(|d| d.id.clone()).collect()).unwrap_or_default();
     let header = match kind {
-        0 => "Элементы не будут прикрепляться к выключенным сеткам ArtMesh из этого списка.",
+        0 => "Элементы не будут прикрепляться к включённым сеткам ArtMesh из этого списка. Выключено = прикрепление разрешено.",
         1 => "Элементы будут удаляться при их перетаскивании на включённые сетки ArtMesh из этого списка.",
         2 => "Насколько наложение освещения влияет на каждую сетку ArtMesh (1 = полностью).",
         3 => "Цвета умножения (с прозрачностью: 0 скрывает часть) и осветления для сеток ArtMesh. Перекрашивайте модель только с разрешения художника.",
@@ -470,6 +471,31 @@ fn mesh_list(app: &mut App, ctx: &Context, kind: u8) {
             });
         }
         let f = st.filter.to_lowercase();
+        if kind <= 1 || (kind == 4 && !d.model_art_mesh_groups.is_empty()) {
+            // Bulk switches for the meshes matching the filter.
+            let mut set_all = None;
+            ui.horizontal(|ui| {
+                if ui.button(tr("Включить все")).clicked() {
+                    set_all = Some(true);
+                }
+                if ui.button(tr("Выключить все")).clicked() {
+                    set_all = Some(false);
+                }
+            });
+            if let Some(on) = set_all {
+                for id in ids.iter().filter(|i| f.is_empty() || i.to_lowercase().contains(&f)) {
+                    match kind {
+                        0 => ArtMeshDetails::set_list(&mut d.art_meshes_excluded_from_pinning, id, on),
+                        1 => ArtMeshDetails::set_list(&mut d.art_meshes_that_delete_items_on_drop, id, on),
+                        _ => {
+                            if let Some(g) = d.model_art_mesh_groups.get_mut(st.group) {
+                                ArtMeshDetails::set_list(&mut g.art_meshes, id, on);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let row_w = ui.available_width() - 16.0;
         for id in ids.iter().filter(|i| f.is_empty() || i.to_lowercase().contains(&f)).take(600) {
             ui.horizontal(|ui| {
@@ -477,14 +503,14 @@ fn mesh_list(app: &mut App, ctx: &Context, kind: u8) {
                 match kind {
                     0 | 1 | 4 => {
                         let mut on = match kind {
-                            0 => !d.excluded(id),
+                            0 => d.excluded(id),
                             1 => d.deletes(id),
                             _ => d.model_art_mesh_groups.get(st.group).map(|g| g.art_meshes.contains(id)).unwrap_or(false),
                         };
                         ui.allocate_ui(Vec2::new(row_w - 40.0, 40.0), |ui| {
                             if pink_row(ui, &mut on, id, "") {
                                 match kind {
-                                    0 => ArtMeshDetails::set_list(&mut d.art_meshes_excluded_from_pinning, id, !on),
+                                    0 => ArtMeshDetails::set_list(&mut d.art_meshes_excluded_from_pinning, id, on),
                                     1 => ArtMeshDetails::set_list(&mut d.art_meshes_that_delete_items_on_drop, id, on),
                                     _ => {
                                         if let Some(g) = d.model_art_mesh_groups.get_mut(st.group) {
@@ -713,4 +739,97 @@ fn draw_pad(ui: &mut egui::Ui, p: &crate::controller::Pad) {
         pt.rect_filled(r, 8.0, Color32::from_rgb(230, 210, 150));
         pt.rect_filled(egui::Rect::from_min_size(r.min, Vec2::new(80.0 * v, 30.0)), 8.0, Color32::from_rgb(240, 170, 40));
     }
+}
+
+// ------------------------------------------------------------------ Updates
+
+fn update_status(app: &mut App, ui: &mut egui::Ui, full: bool) {
+    use crate::updater::State;
+    match app.updater.state() {
+        State::Idle => {}
+        State::Checking => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(tr("Проверка обновлений…"));
+            });
+        }
+        State::UpToDate => {
+            ui.label(RichText::new(format!("✔ {}", tr("У вас последняя версия"))).color(Color32::from_rgb(60, 160, 80)));
+        }
+        State::Available(r) => {
+            ui.label(RichText::new(format!("{} {}", tr("Доступна новая версия"), r.tag)).size(18.0).strong().color(Color32::from_rgb(236, 30, 160)));
+            if full && !r.notes.is_empty() {
+                egui::CollapsingHeader::new(tr("Что нового")).id_salt("upd-notes").show(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                        ui.add(egui::Label::new(RichText::new(&r.notes).size(13.0)).wrap());
+                    });
+                });
+            }
+            let w = ui.available_width().min(420.0);
+            if wide_button(ui, "⬇", "Обновить и перезапустить", w) {
+                app.save();
+                app.updater.install(r.clone());
+            }
+            if full && ui.link(tr("Открыть страницу релиза")).clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(&r.page));
+            }
+        }
+        State::Downloading(done, total) => {
+            let f = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+            ui.label(tr("Загрузка обновления…"));
+            ui.add(egui::ProgressBar::new(f).text(format!("{:.1} / {:.1} МБ", done as f32 / 1048576.0, total as f32 / 1048576.0)));
+            ui.ctx().request_repaint();
+        }
+        State::Installing | State::Ready => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(tr("Установка, программа перезапустится…"));
+            });
+        }
+        State::Error(e) => {
+            ui.colored_label(Color32::from_rgb(220, 80, 80), format!("{}: {e}", tr("Ошибка обновления")));
+        }
+    }
+}
+
+/// General tab: version, auto-check and manual update.
+pub fn update_card(app: &mut App, ui: &mut egui::Ui) {
+    section(ui, "Обновления", |ui| {
+        ui.label(RichText::new(format!("{} {}", tr("Текущая версия:"), crate::updater::current_version())).size(17.0));
+        if toggle(ui, &mut app.settings.update_check, tr("Проверять обновления при запуске")).changed() {
+            app.save();
+        }
+        if !app.updater.busy() && ui.button(tr("Проверить сейчас")).clicked() {
+            app.updater.check();
+        }
+        update_status(app, ui, true);
+    });
+}
+
+/// Small banner at the top of the window when a new version is available or installing.
+fn update_banner(app: &mut App, ctx: &Context) {
+    use crate::updater::State;
+    let st = app.updater.state();
+    let show = match st {
+        State::Available(_) => !app.update_banner_closed,
+        State::Downloading(..) | State::Installing | State::Ready => true,
+        State::Error(_) => false,
+        _ => false,
+    };
+    if !show || app.ui.settings_open {
+        return;
+    }
+    egui::Area::new(egui::Id::new("upd-banner")).order(egui::Order::Foreground).anchor(Align2::CENTER_TOP, [0.0, 12.0]).show(ctx, |ui| {
+        egui::Frame::none().fill(Color32::WHITE).rounding(8.0).inner_margin(12.0).stroke(Stroke::new(1.0f32, Color32::from_rgb(166, 214, 240))).show(ui, |ui| {
+            ui.set_width(440.0);
+            ui.style_mut().visuals.override_text_color = Some(TEXT);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("🚀").size(22.0));
+                ui.vertical(|ui| update_status(app, ui, false));
+                if matches!(app.updater.state(), State::Available(_)) && ui.add(egui::Button::new(RichText::new("✖").size(18.0).color(Color32::GRAY)).frame(false)).on_hover_text(tr("Позже")).clicked() {
+                    app.update_banner_closed = true;
+                }
+            });
+        });
+    });
 }

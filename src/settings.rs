@@ -265,6 +265,8 @@ pub struct Settings {
     pub item_allow_animated: bool,
     pub item_allow_live2d: bool,
     pub item_pin: bool,
+    /// Check GitHub for a new version at startup.
+    pub update_check: bool,
     /// Live2D Cubism Editor API (VTS "Live2D Cubism Editor API" card).
     pub editor_on: bool,
     pub editor_remote: bool,
@@ -381,6 +383,7 @@ impl Default for Settings {
             item_allow_animated: true,
             item_allow_live2d: true,
             item_pin: true,
+            update_check: true,
             editor_on: false,
             editor_remote: false,
             editor_ip: "192.168.0.2".into(),

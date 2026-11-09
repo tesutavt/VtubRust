@@ -478,7 +478,9 @@ fn scene_input(app: &mut App, ctx: &Context) {
                             let was = it.pin.is_some();
                             it.pin = None;
                             let mesh = it.pin_to_filtered(a, det);
-                            if it.cfg.pin_notify || notify_all {
+                            if mesh.is_none() && a.pick(it.xf.pos).is_some() && it.cfg.pin_only_layer != "__never" {
+                                note = Some(tr("Не закреплено: прикрепление к этой части модели отключено (Настроить модель → Отключить прикрепление к сеткам ArtMesh)").to_string());
+                            } else if it.cfg.pin_notify || notify_all {
                                 note = match (&mesh, was) {
                                     (Some(m), _) => Some(format!("{} {m}", tr("Закреплено к слою"))),
                                     (None, true) => Some(tr("Предмет откреплён").to_string()),
@@ -1145,6 +1147,7 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
             });
         });
     });
+    crate::ui_vts::update_card(app, ui);
     section(ui, "", |ui| {
         if big_button(ui, tr("Открыть папку данных"), tr("Импорт моделей, фонов, предметов и пр."), "📁").clicked() {
             app.actions.push(Action::OpenDataFolder);
