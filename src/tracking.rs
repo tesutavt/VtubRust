@@ -1,6 +1,15 @@
-//! Webcam tracking through an external OpenSeeFace tracker process (BSD-2 licensed;
-//! a copy ships with VTube Studio). We spawn `facetracker.exe`, it streams UDP packets
-//! to us, we convert them into VTS-style tracking inputs.
+//! Face tracking backends. All of them run outside our process and stream UDP to us:
+//!
+//! * OpenSeeFace / Mediapipe: `facetracker.exe` (BSD-2, a copy ships with VTube Studio).
+//! * NVIDIA Broadcast (RTX): `ExpressionApp.exe` from VTube Studio's free
+//!   "NVIDIA Broadcast Tracker" DLC (`StreamingAssets\MXTracker`). It sends JSON with
+//!   53 ARKit-style expression values and a head quaternion to UDP 9140..9145.
+//! * Phone: VTube Studio for iPhone / Android (or any app speaking the same protocol,
+//!   e.g. MeowFace). We ask the phone for data with an `iOSTrackingDataRequest` on UDP
+//!   21412 and it streams JSON with the 52 ARKit blendshapes back to us. The same phone can
+//!   feed VBridger at the same time (the request lists our own port only).
+//!
+//! Everything is converted into VTS-style tracking inputs.
 
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
@@ -55,15 +64,38 @@ pub mod bs {
 pub enum FaceKind {
     OpenSeeFace,
     Mediapipe,
+    /// NVIDIA Broadcast expression tracker (ExpressionApp.exe).
+    Nvidia,
+    /// VTube Studio phone app (iPhone ARKit / Android).
+    Phone,
+}
+
+impl FaceKind {
+    /// True when `bs` holds ARKit blendshapes.
+    pub fn has_blendshapes(self) -> bool {
+        self != FaceKind::OpenSeeFace
+    }
+}
+
+/// Tracking backends (`Settings::track_backend`).
+pub mod backend {
+    pub const OPENSEEFACE: u8 = 0;
+    pub const MEDIAPIPE: u8 = 1;
+    pub const NVIDIA: u8 = 2;
+    pub const PHONE: u8 = 3;
 }
 
 #[derive(Clone, Copy)]
 pub struct FaceFrame {
     pub kind: FaceKind,
-    /// Mediapipe blendshapes (zero for OpenSeeFace).
+    /// ARKit blendshapes in Mediapipe order (zero for OpenSeeFace), see `perfect_sync::ARKIT_NAMES`.
     pub bs: [f32; 52],
-    /// Mediapipe landmarks, normalised image coordinates (preview only).
+    /// ARKit `tongueOut` (phone tracking only).
+    pub tongue: f32,
+    /// Landmarks in normalised image coordinates (preview only): Mediapipe / NVIDIA.
     pub mp: [[f32; 2]; 478],
+    /// Number of valid points in `mp`.
+    pub n_mp: u16,
     pub success: bool,
     /// [right, left] eye openness as reported by the tracker (subject's perspective).
     pub eye_open: [f32; 2],
@@ -89,7 +121,9 @@ fn parse(b: &[u8]) -> Option<FaceFrame> {
     let mut f = FaceFrame {
         kind: FaceKind::OpenSeeFace,
         bs: [0.0; 52],
+        tongue: 0.0,
         mp: [[0.0; 2]; 478],
+        n_mp: 0,
         success: b[28] != 0,
         eye_open: [f32_at(b, 20), f32_at(b, 24)],
         euler: [f32_at(b, 49), f32_at(b, 53), f32_at(b, 57)],
@@ -130,7 +164,9 @@ fn parse_mp(b: &[u8]) -> Option<FaceFrame> {
     let mut f = FaceFrame {
         kind: FaceKind::Mediapipe,
         bs: [0.0; 52],
+        tongue: 0.0,
         mp: [[0.0; 2]; 478],
+        n_mp: 478,
         success: true,
         eye_open: [0.0; 2],
         euler: [pitch, yaw, roll],
@@ -149,6 +185,182 @@ fn parse_mp(b: &[u8]) -> Option<FaceFrame> {
     }
     f.eye_open = [1.0 - f.bs[bs::EYE_BLINK_R], 1.0 - f.bs[bs::EYE_BLINK_L]];
     Some(f)
+}
+
+fn empty_frame(kind: FaceKind) -> FaceFrame {
+    FaceFrame {
+        kind,
+        bs: [0.0; 52],
+        tongue: 0.0,
+        mp: [[0.0; 2]; 478],
+        n_mp: 0,
+        success: false,
+        eye_open: [1.0; 2],
+        euler: [0.0; 3],
+        translation: [0.0; 3],
+        lms: [[0.0; 2]; 68],
+        features: [0.0; 14],
+        confidence: 0.0,
+        size: [1280.0, 720.0],
+        received: Instant::now(),
+    }
+}
+
+/// `ExpressionApp` `exp` array order (NVIDIA AR SDK expression sample) → index into
+/// `FaceFrame::bs`. Inner brow and cheek puff come per side and are averaged.
+const NV_TO_BS: [usize; 53] = [
+    1, 2, 3, 3, 4, 5, 6, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+    30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51,
+];
+
+fn quat_to_euler(q: [f32; 4]) -> [f32; 3] {
+    let [x, y, z, w] = q;
+    let rx = (2.0 * (w * x + y * z)).atan2(1.0 - 2.0 * (x * x + y * y));
+    let ry = (2.0 * (w * y - z * x)).clamp(-1.0, 1.0).asin();
+    let rz = (2.0 * (w * z + x * y)).atan2(1.0 - 2.0 * (y * y + z * z));
+    [rx.to_degrees(), ry.to_degrees(), rz.to_degrees()]
+}
+
+fn json_f32s(v: &serde_json::Value) -> Vec<f32> {
+    v.as_array().map(|a| a.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect()).unwrap_or_default()
+}
+
+/// What an `ExpressionApp` datagram contained.
+pub enum NvPacket {
+    Face(Box<FaceFrame>),
+    /// Result of a `calibrate` command: coefficients for `--expr_calibration`.
+    Calibration(Vec<f32>),
+}
+
+/// NVIDIA `ExpressionApp.exe` packet: a JSON object followed by a NUL byte.
+pub fn parse_nvidia(b: &[u8]) -> Option<NvPacket> {
+    let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    let v: serde_json::Value = serde_json::from_slice(&b[..end]).ok()?;
+    let cal = json_f32s(&v["cal"]);
+    if !cal.is_empty() {
+        return Some(NvPacket::Calibration(cal));
+    }
+    let exp = json_f32s(&v["exp"]);
+    let rot = json_f32s(&v["rot"]);
+    let pts = json_f32s(&v["pts"]);
+    let mut f = empty_frame(FaceKind::Nvidia);
+    // `pts` = [width, height, x0, y0, x1, y1, ...]; empty when the face is lost.
+    f.success = exp.len() >= 53 && rot.len() >= 4 && pts.len() >= 70;
+    f.confidence = (v["cnf"].as_f64().unwrap_or(0.0) as f32 / 50.0).clamp(0.0, 1.0);
+    if !f.success {
+        return Some(NvPacket::Face(Box::new(f)));
+    }
+    let mut sum = [0.0f32; 52];
+    let mut cnt = [0u8; 52];
+    for (i, &k) in NV_TO_BS.iter().enumerate() {
+        sum[k] += exp[i].clamp(0.0, 1.0);
+        cnt[k] += 1;
+    }
+    for k in 1..52 {
+        f.bs[k] = if cnt[k] > 0 { sum[k] / cnt[k] as f32 } else { 0.0 };
+    }
+    // NVIDIA's left/right is the subject's, like ARKit.
+    f.eye_open = [1.0 - f.bs[bs::EYE_BLINK_R], 1.0 - f.bs[bs::EYE_BLINK_L]];
+    let e = quat_to_euler([rot[0], rot[1], rot[2], rot[3]]);
+    // Camera space: x right, y up, z towards the camera. Pitch up / yaw / roll like OpenSeeFace.
+    f.euler = [-e[0], e[1], -e[2]];
+    let (w, h) = (pts[0].max(1.0), pts[1].max(1.0));
+    f.size = [w, h];
+    let n = ((pts.len() - 2) / 2).min(478);
+    for i in 0..n {
+        f.mp[i] = [pts[2 + i * 2] / w, pts[3 + i * 2] / h];
+    }
+    f.n_mp = n as u16;
+    // `pos` is always zero: estimate head position from the jawline end points (0 and 32).
+    let (a, c) = (f.mp[0], f.mp[32.min(n - 1)]);
+    let mid = [(a[0] + c[0]) * 0.5, (a[1] + c[1]) * 0.5];
+    let width = ((c[0] - a[0]).powi(2) + (c[1] - a[1]).powi(2)).sqrt();
+    f.translation = [(mid[0] - 0.5) * 1.6, (mid[1] - 0.5) * 1.2, -width * 3.0];
+    Some(NvPacket::Face(Box::new(f)))
+}
+
+fn vec3(v: &serde_json::Value) -> [f32; 3] {
+    let g = |k: &str| v[k].as_f64().unwrap_or(0.0) as f32;
+    [g("x"), g("y"), g("z")]
+}
+
+/// VTube Studio phone app packet (JSON, see `VTubeStudioRawTrackingData` in DenchiSoft's
+/// `VTubeStudioBlendshapeUDPReceiverTest`). Returns the frame and the on-screen hotkey
+/// (1..8, -1 = none).
+pub fn parse_phone(b: &[u8]) -> Option<(FaceFrame, i32)> {
+    let v: serde_json::Value = serde_json::from_slice(b).ok()?;
+    let shapes = v["BlendShapes"].as_array()?;
+    let mut f = empty_frame(FaceKind::Phone);
+    f.success = v["FaceFound"].as_bool().unwrap_or(false);
+    f.confidence = if f.success { 1.0 } else { 0.0 };
+    for e in shapes {
+        let (Some(k), Some(val)) = (e["k"].as_str(), e["v"].as_f64()) else { continue };
+        let val = val as f32;
+        if k.eq_ignore_ascii_case("TongueOut") {
+            f.tongue = val;
+        } else if let Some(i) = crate::perfect_sync::arkit_index(k) {
+            f.bs[i] = val;
+        }
+    }
+    f.eye_open = [1.0 - f.bs[bs::EYE_BLINK_R], 1.0 - f.bs[bs::EYE_BLINK_L]];
+    // Unity euler angles in degrees (0..360): x = pitch (down positive), y = yaw, z = roll.
+    let r = vec3(&v["Rotation"]);
+    f.euler = [-wrap_deg(r[0]), wrap_deg(r[1]), wrap_deg(r[2])];
+    let p = vec3(&v["Position"]);
+    f.translation = [p[0] * 0.1, p[1] * 0.1, p[2] * 0.1];
+    Some((f, v["Hotkey"].as_i64().unwrap_or(-1) as i32))
+}
+
+/// Camera list from `ExpressionApp.exe --print_caps`: (camera id, name, caps), each cap
+/// being (cap id, width, height, fps).
+pub type NvCamera = (i32, String, Vec<(i32, u32, u32, u32)>);
+
+pub fn nvidia_caps(exe: &Path) -> Vec<NvCamera> {
+    let mut cmd = Command::new(exe);
+    cmd.current_dir(exe.parent().unwrap_or(Path::new("."))).arg("--print_caps");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let Ok(out) = cmd.output() else { return Vec::new() };
+    let text = String::from_utf8_lossy(&out.stdout);
+    // Some log lines come first; the JSON array is the last block.
+    let Some(start) = text.find("[{").or_else(|| text.find('[')) else { return Vec::new() };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text[start..].trim_end_matches(|c: char| c != ']')) else { return Vec::new() };
+    v.as_array()
+        .map(|cams| {
+            cams.iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let caps = c["caps"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .enumerate()
+                                .map(|(k, cap)| {
+                                    let interval = cap["minInterval"].as_f64().unwrap_or(333_333.0).max(1.0);
+                                    (
+                                        cap["id"].as_i64().unwrap_or(k as i64) as i32,
+                                        cap["maxCX"].as_u64().unwrap_or(0) as u32,
+                                        cap["maxCY"].as_u64().unwrap_or(0) as u32,
+                                        (10_000_000.0 / interval).round() as u32,
+                                    )
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    (c["id"].as_i64().unwrap_or(i as i64) as i32, c["name"].as_str().unwrap_or("").to_string(), caps)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Picks the `--camera_cap` closest to the requested mode.
+fn nvidia_pick_cap(cams: &[NvCamera], camera: i32, w: u32, h: u32, fps: u32) -> Option<(i32, u32, u32, u32)> {
+    let cam = cams.iter().find(|c| c.0 == camera)?;
+    cam.2.iter().copied().min_by_key(|c| (c.1 as i64 - w as i64).abs() + (c.2 as i64 - h as i64).abs() + (c.3 as i64 - fps as i64).abs() * 8)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -198,6 +410,16 @@ pub struct TrackerConfig {
     pub hands: bool,
     /// If false we only listen on the port (tracker started by someone else).
     pub spawn: bool,
+    /// `backend::*`.
+    pub backend: u8,
+    /// NVIDIA `ExpressionApp.exe`.
+    pub nv_exe: PathBuf,
+    /// Saved NVIDIA calibration (`--expr_calibration`).
+    pub nv_cal: Vec<f32>,
+    /// Phone IP (VTube Studio phone app, "3rd Party PC Clients" enabled).
+    pub phone_ip: String,
+    /// Port the phone app listens on (shown in the app, 21412 by default).
+    pub phone_port: u16,
 }
 
 pub struct Tracker {
@@ -210,10 +432,157 @@ pub struct Tracker {
     pub error: Arc<Mutex<Option<String>>>,
     rate_mark: (Instant, u64),
     pub rate: f32,
+    /// NVIDIA calibration received from ExpressionApp (taken by the app and saved).
+    pub nv_cal: Arc<Mutex<Option<Vec<f32>>>>,
+    /// Last on-screen hotkey pressed in the phone app (1..8), taken by the app.
+    pub phone_hotkey: Arc<Mutex<Option<i32>>>,
+    backend: u8,
+    camera: i32,
 }
 
 impl Tracker {
     pub fn start(cfg: &TrackerConfig) -> Result<Tracker> {
+        match cfg.backend {
+            backend::NVIDIA => Self::start_nvidia(cfg),
+            backend::PHONE => Self::start_phone(cfg),
+            _ => Self::start_osf(cfg),
+        }
+    }
+
+    fn new_shell(cfg: &TrackerConfig, child: Option<Child>) -> Tracker {
+        Tracker {
+            child,
+            latest: Arc::new(Mutex::new(None)),
+            latest_hands: Arc::new(Mutex::new(None)),
+            stop: Arc::new(AtomicBool::new(false)),
+            packets: Arc::new(AtomicU64::new(0)),
+            thread: None,
+            error: Arc::new(Mutex::new(None)),
+            rate_mark: (Instant::now(), 0),
+            rate: 0.0,
+            nv_cal: Arc::new(Mutex::new(None)),
+            phone_hotkey: Arc::new(Mutex::new(None)),
+            backend: cfg.backend,
+            camera: cfg.camera,
+        }
+    }
+
+    /// NVIDIA Broadcast tracker: spawns VTS's `ExpressionApp.exe` the way VTS does.
+    fn start_nvidia(cfg: &TrackerConfig) -> Result<Tracker> {
+        // ExpressionApp sends to every port 9140..9145; take the first free one.
+        let sock = (9140..=9145)
+            .find_map(|p| UdpSocket::bind(("127.0.0.1", p)).ok())
+            .context("UDP ports 9140-9145 are busy (is VTube Studio running with NVIDIA tracking?)")?;
+        sock.set_read_timeout(Some(Duration::from_millis(200)))?;
+        if !cfg.nv_exe.is_file() {
+            anyhow::bail!(
+                "ExpressionApp.exe not found ({}). Install the free \"NVIDIA Broadcast Tracker\" DLC of VTube Studio on Steam (RTX GPU required)",
+                cfg.nv_exe.display()
+            );
+        }
+        let child = if cfg.spawn {
+            let dir = cfg.nv_exe.parent().unwrap_or(Path::new(".")).to_path_buf();
+            let cap = nvidia_pick_cap(&nvidia_caps(&cfg.nv_exe), cfg.camera, cfg.width, cfg.height, cfg.fps);
+            let (cap_id, w, h, fps) = cap.unwrap_or((0, cfg.width, cfg.height, cfg.fps));
+            let fps = fps.min(cfg.fps.max(10));
+            let mut cmd = Command::new(&cfg.nv_exe);
+            cmd.current_dir(&dir)
+                .arg("--show=False")
+                .arg("--landmarks=True")
+                .arg(format!("--model_path={}", dir.join("models").display()))
+                .arg(format!("--cam_res={w}x{h}"))
+                .arg("--expr_mode=2")
+                .arg(format!("--camera={}", cfg.camera))
+                .arg(format!("--camera_cap={cap_id}"))
+                .arg(format!("--cam_fps={fps}"))
+                .arg(format!("--fps_limit={fps}"))
+                .arg("--use_opencl=False")
+                .arg("--cam_api=0");
+            if !cfg.nv_cal.is_empty() {
+                let c: Vec<String> = cfg.nv_cal.iter().map(|v| format!("{v:.6}")).collect();
+                cmd.arg(format!("--expr_calibration={}", c.join(";")));
+            }
+            cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0800_0000);
+            }
+            Some(cmd.spawn().with_context(|| format!("cannot start {}", cfg.nv_exe.display()))?)
+        } else {
+            None
+        };
+        let mut t = Self::new_shell(cfg, child);
+        let (latest, stop, packets, cal) = (t.latest.clone(), t.stop.clone(), t.packets.clone(), t.nv_cal.clone());
+        t.thread = Some(std::thread::Builder::new().name("tracking-nvidia".into()).spawn(move || {
+            let mut buf = vec![0u8; 65536];
+            while !stop.load(Ordering::Relaxed) {
+                let Ok(n) = sock.recv(&mut buf) else { continue };
+                match parse_nvidia(&buf[..n]) {
+                    Some(NvPacket::Face(f)) => {
+                        *latest.lock().unwrap() = Some(*f);
+                        packets.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Some(NvPacket::Calibration(c)) => *cal.lock().unwrap() = Some(c),
+                    None => {}
+                }
+            }
+        })?);
+        Ok(t)
+    }
+
+    /// Phone tracking: requests data from the VTube Studio phone app every 2 s.
+    fn start_phone(cfg: &TrackerConfig) -> Result<Tracker> {
+        let ip: std::net::IpAddr = cfg.phone_ip.trim().parse().with_context(|| format!("invalid phone IP \"{}\"", cfg.phone_ip))?;
+        let sock = UdpSocket::bind(("0.0.0.0", cfg.port)).with_context(|| format!("UDP port {} is busy", cfg.port))?;
+        sock.set_read_timeout(Some(Duration::from_millis(100)))?;
+        let target = std::net::SocketAddr::new(ip, cfg.phone_port);
+        let request = serde_json::json!({ "messageType": "iOSTrackingDataRequest", "time": 5.0, "sentBy": "rigrs", "ports": [cfg.port] }).to_string();
+        let mut t = Self::new_shell(cfg, None);
+        let (latest, stop, packets, hotkey, error) = (t.latest.clone(), t.stop.clone(), t.packets.clone(), t.phone_hotkey.clone(), t.error.clone());
+        t.thread = Some(std::thread::Builder::new().name("tracking-phone".into()).spawn(move || {
+            let mut buf = vec![0u8; 65536];
+            let mut last_req = Instant::now() - Duration::from_secs(10);
+            let mut last_hotkey = -1;
+            while !stop.load(Ordering::Relaxed) {
+                if last_req.elapsed() >= Duration::from_secs(2) {
+                    if let Err(e) = sock.send_to(request.as_bytes(), target) {
+                        *error.lock().unwrap() = Some(format!("{target}: {e}"));
+                    }
+                    last_req = Instant::now();
+                }
+                let Ok((n, from)) = sock.recv_from(&mut buf) else { continue };
+                if from.ip() != ip {
+                    continue;
+                }
+                if let Some((f, hk)) = parse_phone(&buf[..n]) {
+                    *latest.lock().unwrap() = Some(f);
+                    packets.fetch_add(1, Ordering::Relaxed);
+                    *error.lock().unwrap() = None;
+                    if hk != last_hotkey && hk >= 1 {
+                        *hotkey.lock().unwrap() = Some(hk);
+                    }
+                    last_hotkey = hk;
+                }
+            }
+        })?);
+        Ok(t)
+    }
+
+    /// Asks the NVIDIA tracker to calibrate the neutral face (look straight, neutral face).
+    pub fn nvidia_calibrate(&self) -> bool {
+        if self.backend != backend::NVIDIA {
+            return false;
+        }
+        let Ok(s) = UdpSocket::bind(("127.0.0.1", 0)) else { return false };
+        s.send_to(br#"{"cmd":" calibrate"}"#, ("127.0.0.1", 9160 + self.camera.max(0) as u16)).is_ok()
+    }
+
+    pub fn backend(&self) -> u8 {
+        self.backend
+    }
+
+    fn start_osf(cfg: &TrackerConfig) -> Result<Tracker> {
         let sock = UdpSocket::bind(("127.0.0.1", cfg.port)).with_context(|| format!("UDP port {} is busy", cfg.port))?;
         sock.set_read_timeout(Some(Duration::from_millis(200)))?;
 
@@ -273,17 +642,14 @@ impl Tracker {
                     }
                 })?
         };
-        Ok(Tracker {
-            child,
-            latest,
-            latest_hands,
-            stop,
-            packets,
-            thread: Some(thread),
-            error,
-            rate_mark: (Instant::now(), 0),
-            rate: 0.0,
-        })
+        let mut t = Self::new_shell(cfg, child);
+        t.latest = latest;
+        t.latest_hands = latest_hands;
+        t.stop = stop;
+        t.packets = packets;
+        t.thread = Some(thread);
+        t.error = error;
+        Ok(t)
     }
 
     pub fn latest(&self) -> Option<FaceFrame> {
@@ -464,7 +830,7 @@ pub fn to_inputs(f: &FaceFrame, c: &Calibration, o: &TrackOptions) -> Inputs {
     // Blink sensitivity raises the "closed" threshold, eye-open sensitivity scales openness.
     let closed = 0.1 + 0.15 * (k(0) - 1.0);
     let eye = |x: f32| (((x - closed) / (0.9 - closed).max(0.1)) * k(1)).clamp(0.0, 1.2);
-    let mp = f.kind == FaceKind::Mediapipe;
+    let mp = f.kind.has_blendshapes();
     let b = &f.bs;
     let wide = |w: f32| if mp { w * 0.4 } else { 0.0 };
     let (mut er, mut el) = (eye(f.eye_open[0]) + wide(b[bs::EYE_WIDE_R]), eye(f.eye_open[1]) + wide(b[bs::EYE_WIDE_L]));
@@ -515,6 +881,7 @@ pub fn to_inputs(f: &FaceFrame, c: &Calibration, o: &TrackOptions) -> Inputs {
         v[input::MOUTH_OPEN] = (b[bs::JAW_OPEN] * 1.4 * k(2)).clamp(0.0, 1.0);
         v[input::MOUTH_X] = ((b[bs::MOUTH_RIGHT] - b[bs::MOUTH_LEFT]) * m).clamp(-1.0, 1.0);
         v[input::CHEEK_PUFF] = b[bs::CHEEK_PUFF].clamp(0.0, 1.0);
+        v[input::TONGUE_OUT] = f.tongue.clamp(0.0, 1.0);
         v[input::FACE_ANGRY] = ((b[bs::NOSE_SNEER_L] + b[bs::NOSE_SNEER_R]) * 0.5 + (b[bs::BROW_DOWN_L] + b[bs::BROW_DOWN_R]) * 0.25).clamp(0.0, 1.0);
     } else {
         v[input::MOUTH_SMILE] = (0.5 + (ft[8] + ft[10]) * 0.25 * k(3)).clamp(0.0, 1.0);

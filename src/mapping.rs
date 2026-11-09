@@ -269,7 +269,7 @@ impl Mapping {
                     if r.auto_blink && !ctx.tracking { v.min(ctx.blink) } else { v }
                 }
                 None if r.auto_breath => ctx.breath,
-                None => match c.custom.as_deref().and_then(custom_input) {
+                None => match c.custom.as_deref().and_then(|n| custom_input(n).or_else(|| crate::perfect_sync::value(n))) {
                     Some(v) => v,
                     None => continue,
                 },

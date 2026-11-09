@@ -40,6 +40,9 @@ mod settings;
 mod spout;
 mod stats;
 mod tracking;
+mod perfect_sync;
+mod net;
+mod ui_net;
 mod ui;
 
 use std::sync::Arc;

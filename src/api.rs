@@ -1062,7 +1062,13 @@ fn find_input(app: &App, name: &str) -> Option<Value> {
         let (mn, mx, df) = default_range(name);
         return Some(json!({ "name": name, "addedBy": "VTube Studio", "value": app.inputs[i], "min": mn, "max": mx, "defaultValue": df }));
     }
-    app.api_custom.get(name).map(|p| json!({ "name": p.name, "addedBy": p.added_by, "value": p.value, "min": p.min, "max": p.max, "defaultValue": p.default }))
+    if let Some(p) = app.api_custom.get(name) {
+        return Some(json!({ "name": p.name, "addedBy": p.added_by, "value": p.value, "min": p.min, "max": p.max, "defaultValue": p.default }));
+    }
+    // Perfect Sync / VBridger inputs computed by our own trackers.
+    let v = crate::perfect_sync::value(name)?;
+    let (mn, mx, df) = crate::perfect_sync::range_of(name);
+    Some(json!({ "name": name, "addedBy": "VTube Studio", "value": v, "min": mn, "max": mx, "defaultValue": df }))
 }
 
 fn create_parameter(app: &mut App, plugin: &str, d: &Value) -> Res {

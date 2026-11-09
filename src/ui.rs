@@ -1162,6 +1162,7 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
         let mut changed = path_row(ui, "Папка VTube Studio (модели, фоны, предметы):", &mut app.settings.vts_dir, || rfd::FileDialog::new().pick_folder());
         changed |= path_row(ui, "Live2DCubismCore.dll:", &mut app.settings.core_dll, || rfd::FileDialog::new().add_filter("DLL", &["dll"]).pick_file());
         changed |= path_row(ui, "OpenSeeFace facetracker.exe:", &mut app.settings.tracker_exe, || rfd::FileDialog::new().add_filter("EXE", &["exe"]).pick_file());
+        changed |= path_row(ui, "NVIDIA ExpressionApp.exe:", &mut app.settings.nv_exe, || rfd::FileDialog::new().add_filter("EXE", &["exe"]).pick_file());
         if changed {
             app.actions.push(Action::ReloadCore);
         }
@@ -1653,6 +1654,7 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
         Modal::RuleInput(_) => {
             let mut v = vec![Row { bold: String::new(), text: "(нет) — только автоморгание/дыхание".into(), enabled: true }];
             v.extend(INPUT_NAMES.iter().enumerate().map(|(k, n)| Row { bold: (*n).into(), text: format!("  текущее {:+.2}", app.inputs[k]), enabled: true }));
+            v.extend(crate::perfect_sync::snapshot().into_iter().map(|(n, x)| Row { bold: n.into(), text: format!("  Perfect Sync / VBridger {x:+.2}"), enabled: true }));
             ("Выберите вход трекинга для этого параметра.", v)
         }
         Modal::RuleOutput(_) => {
@@ -1668,7 +1670,11 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
             ("Выберите параметр Live2D, которым будет управлять этот вход.", v)
         }
         Modal::Quality => {
-            let mut v = vec![Row { bold: "[Google]".into(), text: "Трекер Mediapipe".into(), enabled: true }];
+            let mut v = vec![
+                Row { bold: "[RTX]".into(), text: tr("NVIDIA Broadcast (нужна видеокарта RTX и DLC VTS «NVIDIA Broadcast Tracker»)").into(), enabled: true },
+                Row { bold: "[Телефон]".into(), text: tr("iPhone / Android с приложением VTube Studio (ARKit, лучшее качество)").into(), enabled: true },
+                Row { bold: "[Google]".into(), text: "Трекер Mediapipe".into(), enabled: true },
+            ];
             v.extend(QUALITY.iter().map(|q| Row { bold: format!("[{}]", q.0), text: q.1.into(), enabled: true }));
             ("Выберите качество отслеживания. Более высокое качество обычно означает лучшее отслеживание, но также задействует больше ресурсов процессора.", v)
         }
@@ -1880,7 +1886,14 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
             if let (Some(a), Some(key)) = (&mut app.avatar, key) {
                 if let Some(rule) = a.mapping.rules.get_mut(r) {
                     if let Modal::RuleInput(_) = kind {
-                        rule.input = if i == 0 { String::new() } else { INPUT_NAMES.get(i - 1).map(|n| n.to_string()).unwrap_or_default() };
+                        let ps = crate::perfect_sync::input_names();
+                        rule.input = if i == 0 {
+                            String::new()
+                        } else if let Some(n) = INPUT_NAMES.get(i - 1) {
+                            n.to_string()
+                        } else {
+                            ps.get(i - 1 - INPUT_NAMES.len()).map(|n| n.to_string()).unwrap_or_default()
+                        };
                     } else if let Some(pid) = a.model.param_ids.get(i) {
                         rule.output = pid.clone();
                     }
@@ -1893,8 +1906,12 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
         Modal::Quality => {
             let kind = app.settings.track_type;
             if i == 0 {
+                app.set_tracking_mode(crate::tracking::backend::NVIDIA, 0);
+            } else if i == 1 {
+                app.set_tracking_mode(crate::tracking::backend::PHONE, 0);
+            } else if i == 2 {
                 app.set_tracking_mode(1, kind);
-            } else if let Some(q) = QUALITY.get(i - 1) {
+            } else if let Some(q) = QUALITY.get(i - 3) {
                 app.settings.track_quality = q.2;
                 app.set_tracking_mode(0, kind);
             }
@@ -1998,9 +2015,9 @@ fn camera_preview(app: &mut App, ctx: &Context, e: f32) {
                     }
                 }
             }
-            if let Some(f) = face.filter(|f| f.kind == crate::tracking::FaceKind::Mediapipe) {
+            if let Some(f) = face.filter(|f| f.n_mp > 0) {
                 let p = ui.painter();
-                for q in f.mp.iter() {
+                for q in f.mp[..f.n_mp as usize].iter() {
                     p.circle_filled(norm(q[0], q[1]), 1.1, Color32::from_rgb(40, 140, 230));
                 }
             } else if let Some(f) = face {
@@ -2041,7 +2058,12 @@ fn camera_preview(app: &mut App, ctx: &Context, e: f32) {
                 if ui.add_sized([350.0, 46.0], b).clicked() {
                     app.actions.push(Action::Calibrate);
                 }
-                let name = if app.settings.track_backend == 1 { "Media\npipe" } else { "OpenSee\nFace" };
+                let name = match app.settings.track_backend {
+                    1 => "Media\npipe",
+                    2 => "NVIDIA\nRTX",
+                    3 => "Phone\nARKit",
+                    _ => "OpenSee\nFace",
+                };
                 ui.label(RichText::new(name).size(13.0).strong().color(Color32::from_rgb(220, 70, 90)));
             });
         });
@@ -2063,14 +2085,21 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             app.ui.modal_sel = None;
         }
         ui.add_space(4.0);
-        let qlabel = if app.settings.track_backend == 1 { "[Google] Трекер Mediapipe".to_string() } else { quality_label(app.settings.track_quality).0.to_string() };
+        let qlabel = match app.settings.track_backend {
+            1 => "[Google] Трекер Mediapipe".to_string(),
+            2 => "[RTX] NVIDIA Broadcast".to_string(),
+            3 => tr("[Телефон] iPhone / Android").to_string(),
+            _ => quality_label(app.settings.track_quality).0.to_string(),
+        };
         if picker(ui, tr("Качество отслеживания"), &[qlabel], !running).clicked() {
             app.ui.modal = Some(Modal::Quality);
             app.ui.modal_sel = None;
         }
         ui.add_space(4.0);
-        let tlabel = ["Только лицо", "Только руки", "Лицо и руки"][app.settings.track_type.min(2) as usize].to_string();
-        if picker(ui, tr("Тип отслеживания"), &[tlabel], !running).clicked() {
+        crate::ui_net::tracker_extra(app, ui, running);
+        let face_only = app.settings.track_backend >= crate::tracking::backend::NVIDIA;
+        let tlabel = ["Только лицо", "Только руки", "Лицо и руки"][if face_only { 0 } else { app.settings.track_type.min(2) as usize }].to_string();
+        if picker(ui, tr("Тип отслеживания"), &[tlabel], !running && !face_only).clicked() {
             app.ui.modal = Some(Modal::TrackType);
             app.ui.modal_sel = None;
         }
@@ -2148,6 +2177,15 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
                 ui.horizontal(|ui| {
                     ui.add_sized([150.0, 16.0], egui::Label::new(*n));
                     ui.label(format!("{:+.2}", app.inputs[i]));
+                });
+            }
+        });
+        egui::CollapsingHeader::new(tr("Perfect Sync / VBridger (ARKit)")).show(ui, |ui| {
+            ui.label(RichText::new(tr("Доступны с трекерами NVIDIA, телефоном и Mediapipe. Назначаются на параметры Live2D по имени, как кастомные параметры VBridger.")).size(14.0).color(Color32::GRAY));
+            for (n, x) in crate::perfect_sync::snapshot() {
+                ui.horizontal(|ui| {
+                    ui.add_sized([170.0, 16.0], egui::Label::new(n));
+                    ui.label(format!("{x:+.2}"));
                 });
             }
         });

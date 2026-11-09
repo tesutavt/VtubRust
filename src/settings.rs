@@ -163,8 +163,19 @@ pub struct Settings {
     pub cam_dcap: i32,
     pub cam_format: String,
     pub track_quality: i32,
-    /// 0 = OpenSeeFace, 1 = Mediapipe
+    /// 0 = OpenSeeFace, 1 = Mediapipe, 2 = NVIDIA Broadcast (RTX), 3 = phone (VTS iPhone/Android app)
     pub track_backend: u8,
+    /// NVIDIA Broadcast tracker (`ExpressionApp.exe` from the VTS "NVIDIA Broadcast Tracker" DLC).
+    pub nv_exe: String,
+    /// NVIDIA neutral-face calibration coefficients.
+    pub nv_cal: Vec<f32>,
+    /// Phone running the VTube Studio app ("3rd Party PC Clients" on).
+    pub phone_ip: String,
+    pub phone_port: u16,
+    /// Local UDP port the phone sends to.
+    pub phone_local_port: u16,
+    /// VNet-style multiplayer.
+    //NETSETTINGS
     /// 0 = face, 1 = hands, 2 = face + hands
     pub track_type: u8,
     pub track_threads: u32,
@@ -295,7 +306,7 @@ impl Default for Settings {
         Settings {
             core_dll: format!(r"{vts}\VTube Studio_Data\Plugins\x86_64\Live2DCubismCore.dll"),
             tracker_exe: format!(r"{vts}\VTube Studio_Data\StreamingAssets\OpenSeeFaceTracker_v_1_20_2\binary\facetracker.exe"),
-            vts_dir: vts,
+            vts_dir: vts.clone(),
             camera: 0,
             cam_size: [640, 360],
             cam_fps: 30,
@@ -303,6 +314,12 @@ impl Default for Settings {
             cam_format: String::new(),
             track_quality: 3,
             track_backend: 0,
+            nv_exe: format!(r"{vts}\VTube Studio_Data\StreamingAssets\MXTracker\ExpressionApp.exe"),
+            nv_cal: Vec::new(),
+            phone_ip: String::new(),
+            phone_port: 21412,
+            phone_local_port: 21413,
+            //NETDEFAULT
             track_type: 0,
             track_threads: 1,
             track_port: 11573,

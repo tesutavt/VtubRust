@@ -197,6 +197,14 @@ fn fix_paths(s: &mut Settings) {
             s.core_dll = v.join(r"VTube Studio_Data\Plugins\x86_64\Live2DCubismCore.dll").to_string_lossy().into_owned();
         }
     }
+    if !Path::new(&s.nv_exe).is_file() {
+        let local = exe_dir.join("MXTracker").join("ExpressionApp.exe");
+        if local.is_file() {
+            s.nv_exe = local.to_string_lossy().into_owned();
+        } else if let Some(v) = &vts {
+            s.nv_exe = v.join(r"VTube Studio_Data\StreamingAssets\MXTracker\ExpressionApp.exe").to_string_lossy().into_owned();
+        }
+    }
     if !Path::new(&s.tracker_exe).is_file() {
         let local = exe_dir.join("OpenSeeFace").join("facetracker.exe");
         if local.is_file() {
@@ -515,8 +523,13 @@ impl App {
             dcap: self.settings.cam_dcap,
             mediapipe: self.settings.track_backend == 1,
             hands: self.settings.track_type >= 1,
-            port: self.settings.track_port,
+            port: if self.settings.track_backend == tracking::backend::PHONE { self.settings.phone_local_port } else { self.settings.track_port },
             spawn: true,
+            backend: self.settings.track_backend,
+            nv_exe: PathBuf::from(&self.settings.nv_exe),
+            nv_cal: self.settings.nv_cal.clone(),
+            phone_ip: self.settings.phone_ip.clone(),
+            phone_port: self.settings.phone_port,
         };
         match Tracker::start(&cfg) {
             Ok(t) => {
@@ -566,12 +579,28 @@ impl App {
         let Some(t) = &mut self.tracker else {
             self.tracking = false;
             self.inputs = NEUTRAL;
+            crate::perfect_sync::clear();
             return;
         };
         t.poll();
         if let Some(e) = t.error.lock().unwrap().clone() {
             self.tracker_error = Some(e);
         }
+        let nv_cal = t.nv_cal.lock().unwrap().take();
+        let phone_hotkey = t.phone_hotkey.lock().unwrap().take();
+        if let Some(c) = nv_cal {
+            self.settings.nv_cal = c;
+            self.toast("NVIDIA: калибровка сохранена");
+            self.save();
+        }
+        if let Some(k) = phone_hotkey {
+            // Phone on-screen hotkeys 1..8 → hotkeys bound to that screen button (VTS `ScreenButton`).
+            let id = self.hotkeys().iter().find(|h| h.triggers.screen_button == k).map(|h| h.id.clone());
+            if let Some(id) = id {
+                let _ = crate::api::trigger_hotkey(self, &id);
+            }
+        }
+        let Some(t) = &mut self.tracker else { return };
         let hands = t.latest_hands().filter(|h| h.received.elapsed() < Duration::from_millis(400));
         let face_on = self.settings.track_type != 1;
         match t.latest().filter(|_| face_on) {
@@ -582,12 +611,14 @@ impl App {
                     self.toast("Автокалибровка выполнена — смотрите прямо в камеру и нажмите «Калибровать», если нужно");
                 }
                 self.inputs = tracking::to_inputs(&f, &self.settings.calib, &self.settings.track);
+                crate::perfect_sync::update(&f, self.settings.track.mirror);
                 self.tracking = true;
                 self.last_face = Some(f);
             }
             _ => {
                 self.tracking = false;
                 if self.settings.lost_reset || !face_on {
+                    crate::perfect_sync::clear();
                     let keep = self.inputs;
                     self.inputs = NEUTRAL;
                     // Mouse inputs are not tracking-dependent.
@@ -1973,7 +2004,11 @@ impl App {
             Action::Calibrate => match self.tracker.as_ref().and_then(|t| t.latest()).filter(|f| f.success) {
                 Some(f) => {
                     self.settings.calib = Calibration::from_frame(&f);
-                    self.toast("Калибровка выполнена");
+                    if self.tracker.as_ref().map(|t| t.nvidia_calibrate()).unwrap_or(false) {
+                        self.toast("Калибровка выполнена (NVIDIA: нейтральное лицо сохраняется…)");
+                    } else {
+                        self.toast("Калибровка выполнена");
+                    }
                     self.save();
                 }
                 None => self.toast("Калибровка: лицо не найдено"),
