@@ -67,6 +67,15 @@ pub enum Action {
     Quit,
 }
 
+type BgSlot = Arc<Mutex<Option<Result<crate::scene::sprite::SpritePrepared>>>>;
+type ModelSlot = Arc<Mutex<Option<Result<crate::scene::live2d::Prepared>>>>;
+
+struct ModelJob {
+    entry: ModelEntry,
+    slot: ModelSlot,
+    t0: Instant,
+}
+
 pub struct App {
     pub window: Arc<Window>,
     pub gpu: Gpu,
@@ -179,6 +188,12 @@ pub struct App {
     cfg_snapshot: (u64, u64),
     pub ui_extra: crate::ui_model_extra::ModelExtraState,
     pub ui_vts: crate::ui_vts::VtsState,
+    /// Model being prepared on a worker thread (file reads + texture decoding).
+    model_job: Option<ModelJob>,
+    /// Background image being decoded on a worker thread.
+    bg_job: Option<(String, BgSlot)>,
+    /// Saved items to restore once the startup model is loaded (pins need the model).
+    pending_restore: Option<Vec<crate::settings::SavedItem>>,
     pub updater: crate::updater::Updater,
     /// Set when an update was installed: quit, then start the new exe.
     pub restart_after_quit: bool,
@@ -371,6 +386,9 @@ impl App {
             cfg_snapshot: (0, 0),
             ui_extra: Default::default(),
             ui_vts: Default::default(),
+            model_job: None,
+            bg_job: None,
+            pending_restore: None,
             updater: Default::default(),
             restart_after_quit: false,
             update_banner_closed: false,
@@ -387,10 +405,22 @@ impl App {
         }
         if app.settings.save_scene {
             let saved = app.settings.last_items.clone();
-            app.restore_items(&saved);
+            if app.model_job.is_some() {
+                app.pending_restore = Some(saved);
+            } else {
+                app.restore_items(&saved);
+            }
         }
         let bg = app.settings.background.clone();
         app.set_background(bg);
+        // The window is still hidden at startup: wait for the model and background so the
+        // first frame shown is complete (both are decoded in parallel on worker threads).
+        let wait = Instant::now();
+        while (app.model_job.is_some() || app.bg_job.is_some()) && wait.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(2));
+            app.poll_model_job();
+            app.poll_bg_job();
+        }
         if app.settings.track_autostart {
             app.start_tracker();
         }
@@ -685,24 +715,65 @@ impl App {
         self.avatar.as_ref().map(|a| a.model3.to_string_lossy().into_owned())
     }
 
+    /// Starts loading a model: files and textures are prepared on a worker thread, the app
+    /// keeps running (the current model stays on screen) and `poll_model_job` finishes the
+    /// load on the main thread once the data is ready.
     pub fn load_model(&mut self, e: &ModelEntry) {
-        let Some(core) = self.core else {
+        if self.core.is_none() {
             self.toast("Cubism Core не загружен — укажите путь к Live2DCubismCore.dll в настройках");
             return;
-        };
+        }
+        let slot: ModelSlot = Arc::new(Mutex::new(None));
+        let (s2, p) = (slot.clone(), e.model3.clone());
+        let spawned = std::thread::Builder::new().name("model-load".into()).spawn(move || {
+            let r = Live2D::prepare(&p);
+            *s2.lock().unwrap() = Some(r);
+        });
+        if spawned.is_err() {
+            // No thread: load in place.
+            let r = Live2D::prepare(&e.model3);
+            self.finish_model_load(e, r, Instant::now());
+            return;
+        }
+        self.model_job = Some(ModelJob { entry: e.clone(), slot, t0: Instant::now() });
+    }
+
+    /// True while a model is being loaded in the background.
+    pub fn model_loading(&self) -> Option<&str> {
+        self.model_job.as_ref().map(|j| j.entry.name.as_str())
+    }
+
+    fn poll_model_job(&mut self) {
+        let Some(job) = &self.model_job else { return };
+        let Some(r) = job.slot.lock().unwrap().take() else { return };
+        let job = self.model_job.take().unwrap();
+        self.finish_model_load(&job.entry, r, job.t0);
+        if let Some(saved) = self.pending_restore.take() {
+            self.restore_items(&saved);
+        }
+    }
+
+    fn finish_model_load(&mut self, e: &ModelEntry, pre: Result<crate::scene::live2d::Prepared>, t0: Instant) {
+        let Some(core) = self.core else { return };
+        let tm = Instant::now();
+        let dbg = std::env::var_os("RIGRS_HITCH").is_some();
+        let mark = |what: &str| if dbg { eprintln!("LOAD {what}: {:.1} ms", tm.elapsed().as_secs_f32() * 1000.0) };
         self.remember_avatar_xf();
         let key = e.model3.to_string_lossy().into_owned();
-        let t0 = Instant::now();
-        match Live2D::load(
-            core,
-            &self.gpu,
-            &e.model3,
-            e.vtube.as_deref(),
-            self.settings.idle_override.get(&key).map(|s| s.as_str()),
-            self.settings.rules_override.get(&key),
-        ) {
+        match pre.and_then(|pre| {
+            Live2D::load_prepared(
+                core,
+                &self.gpu,
+                pre,
+                e.vtube.as_deref(),
+                self.settings.idle_override.get(&key).map(|s| s.as_str()),
+                self.settings.rules_override.get(&key),
+            )
+        }) {
             Ok(mut a) => {
+                mark("load_prepared");
                 a.update(0.0, &NEUTRAL, false, false);
+                mark("first update");
                 let (vw, vh) = self.viewport();
                 match self.settings.model_xf.get(&key) {
                     Some(xf) => a.xf = *xf,
@@ -732,7 +803,9 @@ impl App {
                 self.avatar = Some(a);
                 self.settings.last_model = Some(key);
                 self.active_scene = None;
+                mark("before hotkeys");
                 crate::hotkeys::on_model_loaded(self);
+                mark("hotkeys");
                 if let Some(key) = self.model_key() {
                     if !self.settings.model_sound.contains_key(&key) {
                         let vol = e.vtube.as_ref().and_then(|p| crate::formats::read_json::<crate::formats::VtubeJson>(p).ok()).and_then(|v| v.general_settings).and_then(|g| g["ModelVolume"].as_f64()).unwrap_or(90.0);
@@ -740,7 +813,9 @@ impl App {
                     }
                 }
                 self.apply_artmesh();
+                mark("artmesh");
                 self.save();
+                mark("save");
             }
             Err(err) => self.toast(format!("Не удалось загрузить модель: {err:#}")),
         }
@@ -790,6 +865,36 @@ impl App {
             it.cfg.fps = *fps;
         }
         Ok(it)
+    }
+
+    /// Dev hooks for the two-instance multiplayer test: `RIGRS_NET_ITEM=<path>` spawns an item
+    /// after 3 s, `RIGRS_NET_SWAP=<secs>` switches to another library model at that time.
+    fn dev_net_test(&mut self) {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        static DONE: AtomicU8 = AtomicU8::new(0);
+        let done = DONE.load(Ordering::Relaxed);
+        if done & 1 == 0 && self.time > 3.0 {
+            DONE.fetch_or(1, Ordering::Relaxed);
+            if let Ok(p) = std::env::var("RIGRS_NET_ITEM") {
+                if let Some(id) = self.add_item(Path::new(&p)) {
+                    if let Some(it) = self.items.iter_mut().find(|i| i.id == id) {
+                        it.xf.pos = [200.0, 100.0];
+                    }
+                }
+            }
+        }
+        if done & 2 == 0 {
+            if let Some(t) = std::env::var("RIGRS_NET_SWAP").ok().and_then(|v| v.parse::<f32>().ok()) {
+                if self.time > t {
+                    DONE.fetch_or(2, Ordering::Relaxed);
+                    let cur = self.avatar.as_ref().map(|a| a.model3.clone());
+                    if let Some(m) = self.library.models.iter().find(|m| Some(&m.model3) != cur.as_ref()).cloned() {
+                        eprintln!("NETTEST swap to {}", m.name);
+                        self.actions.push(Action::LoadModel(m));
+                    }
+                }
+            }
+        }
     }
 
     pub fn add_item(&mut self, source: &Path) -> Option<u64> {
@@ -904,15 +1009,42 @@ impl App {
         }
     }
 
+    /// Switches the background. Images are decoded on a worker thread; the old background
+    /// stays until the new one is ready (no freeze on big 4K images).
     pub fn set_background(&mut self, bg: Background) {
-        self.bg_sprite = None;
-        if let Background::Image(p) = &bg {
-            match Sprite::load(&self.gpu, Path::new(p)) {
-                Ok(s) => self.bg_sprite = Some((p.clone(), s)),
-                Err(e) => self.toast(format!("Фон: {e:#}")),
+        self.bg_job = None;
+        match &bg {
+            Background::Image(p) => {
+                let slot: BgSlot = Arc::new(Mutex::new(None));
+                let (s2, path) = (slot.clone(), PathBuf::from(p));
+                let r = std::thread::Builder::new().name("bg-load".into()).spawn(move || {
+                    *s2.lock().unwrap() = Some(Sprite::prepare(&path));
+                });
+                if r.is_ok() {
+                    self.bg_job = Some((p.clone(), slot));
+                } else {
+                    match Sprite::load(&self.gpu, Path::new(p)) {
+                        Ok(s) => self.bg_sprite = Some((p.clone(), s)),
+                        Err(e) => self.toast(format!("Фон: {e:#}")),
+                    }
+                }
             }
+            _ => self.bg_sprite = None,
         }
         self.settings.background = bg;
+    }
+
+    fn poll_bg_job(&mut self) {
+        let Some((_, slot)) = &self.bg_job else { return };
+        let Some(r) = slot.lock().unwrap().take() else { return };
+        let (p, _) = self.bg_job.take().unwrap();
+        match r {
+            Ok(pre) => self.bg_sprite = Some((p, Sprite::load_prepared(&self.gpu, pre))),
+            Err(e) => {
+                self.bg_sprite = None;
+                self.toast(format!("Фон: {e:#}"));
+            }
+        }
     }
 
     fn clear_color(&self) -> wgpu::Color {
@@ -1507,7 +1639,11 @@ impl App {
 
     pub fn frame(&mut self) {
         let t0 = Instant::now();
-        let dt = t0.duration_since(self.last).as_secs_f32().min(0.1);
+        let raw_dt = t0.duration_since(self.last).as_secs_f32();
+        if raw_dt > 0.04 && std::env::var_os("RIGRS_HITCH").is_some() {
+            eprintln!("HITCH {:.0} ms at {:.1} s", raw_dt * 1000.0, self.time);
+        }
+        let dt = raw_dt.min(0.1);
         self.last = t0;
         self.time += dt;
         if let crate::updater::State::Ready = self.updater.state() {
@@ -1527,6 +1663,11 @@ impl App {
                 self.update_toasted = true;
                 self.toast(format!("{} {}", crate::i18n::tr("Доступна новая версия"), r.tag));
             }
+        }
+        self.poll_model_job();
+        self.poll_bg_job();
+        if std::env::var_os("RIGRS_NET").is_some() {
+            self.dev_net_test();
         }
         self.update_tracking();
         self.update_voice();

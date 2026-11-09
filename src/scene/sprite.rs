@@ -8,6 +8,11 @@ use image::AnimationDecoder;
 
 use crate::gpu::{Affine, Batch, Blend, Clip, Gpu, Painter};
 
+/// Decoded, premultiplied frames (see `Sprite::prepare`).
+pub struct SpritePrepared {
+    frames: Vec<(image::RgbaImage, f32)>,
+}
+
 pub struct Sprite {
     batch: Batch,
     delays: Vec<f32>,
@@ -23,16 +28,31 @@ pub struct Sprite {
 }
 
 impl Sprite {
-    pub fn load(gpu: &Gpu, path: &Path) -> Result<Sprite> {
+    /// Decodes the image / GIF / frame folder and premultiplies it. No GPU: can run on a
+    /// worker thread. Frame folders are decoded in parallel.
+    pub fn prepare(path: &Path) -> Result<SpritePrepared> {
         let is_gif = path.extension().map(|e| e.eq_ignore_ascii_case("gif")).unwrap_or(false);
         let mut frames: Vec<(image::RgbaImage, f32)> = Vec::new();
         if path.is_dir() {
             // VTS: a folder of PNGs in "Items" is an animated item (frames in alphabetical order).
             let mut files: Vec<_> = std::fs::read_dir(path)?.flatten().map(|e| e.path()).filter(|p| p.extension().map(|e| e.eq_ignore_ascii_case("png")).unwrap_or(false)).collect();
             files.sort();
-            for f in files.iter().take(600) {
-                let img = image::open(f).with_context(|| format!("open {}", f.display()))?.to_rgba8();
-                frames.push((img, 1.0 / 12.0));
+            files.truncate(600);
+            let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8);
+            let chunk = files.len().div_ceil(threads).max(1);
+            let decoded: Vec<Result<Vec<image::RgbaImage>>> = std::thread::scope(|sc| {
+                let hs: Vec<_> = files
+                    .chunks(chunk)
+                    .map(|part| {
+                        sc.spawn(move || -> Result<Vec<image::RgbaImage>> {
+                            part.iter().map(|f| Ok(image::open(f).with_context(|| format!("open {}", f.display()))?.to_rgba8())).collect()
+                        })
+                    })
+                    .collect();
+                hs.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            for part in decoded {
+                frames.extend(part?.into_iter().map(|img| (img, 1.0 / 12.0)));
             }
             if frames.is_empty() {
                 anyhow::bail!("{}: no PNG frames", path.display());
@@ -50,6 +70,19 @@ impl Sprite {
             let img = image::open(path).with_context(|| format!("open {}", path.display()))?.to_rgba8();
             frames.push((img, 1.0));
         }
+        for (img, _) in &mut frames {
+            crate::gpu::premultiply(img);
+        }
+        Ok(SpritePrepared { frames })
+    }
+
+    pub fn load(gpu: &Gpu, path: &Path) -> Result<Sprite> {
+        Ok(Self::load_prepared(gpu, Self::prepare(path)?))
+    }
+
+    /// GPU part of loading (main thread).
+    pub fn load_prepared(gpu: &Gpu, pre: SpritePrepared) -> Sprite {
+        let frames = pre.frames;
         let (w, h) = frames[0].0.dimensions();
         let mut texture_bytes = 0;
         let mut textures = Vec::with_capacity(frames.len());
@@ -57,14 +90,14 @@ impl Sprite {
         for (img, d) in frames {
             let (fw, fh) = img.dimensions();
             texture_bytes += fw as u64 * fh as u64 * 4;
-            textures.push(gpu.texture(img.into_raw(), fw, fh));
+            textures.push(gpu.texture_premultiplied(img.as_raw(), fw, fh));
             delays.push(d);
         }
         let (hw, hh) = (w as f32 / 2.0, h as f32 / 2.0);
         let pos = [[-hw, hh], [hw, hh], [hw, -hh], [-hw, -hh]];
         let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         let batch = Batch::new(gpu, &pos, &uv, &[0, 1, 2, 0, 2, 3], 1, textures);
-        Ok(Sprite { batch, total: delays.iter().sum(), file_delays: delays.clone(), delays, time: 0.0, frame: 0, size: [w as f32, h as f32], texture_bytes, tint: [1.0; 3], alpha: 1.0, mosaic: 0.0 })
+        Sprite { batch, total: delays.iter().sum(), file_delays: delays.clone(), delays, time: 0.0, frame: 0, size: [w as f32, h as f32], texture_bytes, tint: [1.0; 3], alpha: 1.0, mosaic: 0.0 }
     }
 
     pub fn update(&mut self, dt: f32) {

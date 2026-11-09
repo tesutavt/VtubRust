@@ -60,6 +60,9 @@ use winit::window::{Window, WindowId};
 struct Runner {
     app: Option<app::App>,
     next_frame: Instant,
+    /// The window starts hidden and is shown after the first rendered frame (otherwise
+    /// Windows shows uninitialised black/white stripes while the app starts).
+    shown: bool,
 }
 
 impl ApplicationHandler for Runner {
@@ -70,6 +73,7 @@ impl ApplicationHandler for Runner {
         let demo = std::env::var_os("RIGRS_DEMO").is_some();
         let mut attrs = Window::default_attributes()
             .with_title(if demo { "rigrs demo" } else { "rigrs — Live2D avatar" })
+            .with_visible(false)
             .with_inner_size(LogicalSize::new(1280.0, 800.0));
         if demo {
             attrs = attrs
@@ -122,6 +126,13 @@ impl ApplicationHandler for Runner {
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         let Some(app) = &mut self.app else { return };
+        if !self.shown {
+            // Hidden windows get no redraw events: render the first frame directly, then show.
+            self.shown = true;
+            app.frame();
+            app.window.set_visible(true);
+            app.window.request_redraw();
+        }
         // Windows sends no WM_PAINT to a minimized window, so redraw requests are never
         // answered; run the frame directly to keep outputs, hotkeys and the API alive.
         let minimized = app.window.is_minimized().unwrap_or(false);
@@ -169,7 +180,7 @@ fn main() {
         windows::Win32::Media::timeBeginPeriod(1);
     }
     let el = EventLoop::new().expect("event loop");
-    let mut runner = Runner { app: None, next_frame: Instant::now() };
+    let mut runner = Runner { app: None, next_frame: Instant::now(), shown: false };
     if let Err(e) = el.run_app(&mut runner) {
         eprintln!("{e}");
     }

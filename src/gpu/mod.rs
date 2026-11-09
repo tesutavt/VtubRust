@@ -97,6 +97,19 @@ pub enum Clip {
     Outside = 2,
 }
 
+/// Premultiplies alpha in place (textures are drawn with premultiplied blending, which also
+/// avoids white fringes).
+pub fn premultiply(rgba: &mut [u8]) {
+    for px in rgba.chunks_exact_mut(4) {
+        let a = px[3] as u32;
+        if a != 255 {
+            px[0] = ((px[0] as u32 * a + 127) / 255) as u8;
+            px[1] = ((px[1] as u32 * a + 127) / 255) as u8;
+            px[2] = ((px[2] as u32 * a + 127) / 255) as u8;
+        }
+    }
+}
+
 pub struct Gpu {
     pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
@@ -520,14 +533,13 @@ impl Gpu {
 
     /// Uploads straight-alpha RGBA8 pixels (premultiplying them) as a sampled texture.
     pub fn texture(&self, mut rgba: Vec<u8>, w: u32, h: u32) -> wgpu::BindGroup {
-        for px in rgba.chunks_exact_mut(4) {
-            let a = px[3] as u32;
-            if a != 255 {
-                px[0] = ((px[0] as u32 * a + 127) / 255) as u8;
-                px[1] = ((px[1] as u32 * a + 127) / 255) as u8;
-                px[2] = ((px[2] as u32 * a + 127) / 255) as u8;
-            }
-        }
+        premultiply(&mut rgba);
+        self.texture_premultiplied(&rgba, w, h)
+    }
+
+    /// Uploads RGBA that is already premultiplied (see `premultiply`, done off the main thread
+    /// for models).
+    pub fn texture_premultiplied(&self, rgba: &[u8], w: u32, h: u32) -> wgpu::BindGroup {
         let tex = self.device.create_texture_with_data(
             &self.queue,
             &wgpu::TextureDescriptor {
@@ -541,7 +553,7 @@ impl Gpu {
                 view_formats: &[],
             },
             wgpu::util::TextureDataOrder::LayerMajor,
-            &rgba,
+            rgba,
         );
         let view = tex.create_view(&Default::default());
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {

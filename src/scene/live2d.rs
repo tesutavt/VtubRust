@@ -228,14 +228,20 @@ pub fn list_motions(dir: &Path) -> Vec<String> {
     v
 }
 
+/// The slow, GPU-free part of loading a model (file reads + PNG decoding). Plain data, so it
+/// can be made on a worker thread while the app keeps rendering.
+pub struct Prepared {
+    model3: PathBuf,
+    moc: Vec<u8>,
+    images: Vec<image::RgbaImage>,
+}
+
 impl Live2D {
-    pub fn load(core: &'static Core, gpu: &Gpu, model3: &Path, vtube: Option<&Path>, idle_override: Option<&str>, rules_override: Option<&Vec<Rule>>) -> Result<Live2D> {
+    /// Reads the .moc3 and decodes the textures (in parallel). No GPU, no Cubism calls.
+    pub fn prepare(model3: &Path) -> Result<Prepared> {
         let dir = model3.parent().unwrap_or(Path::new(".")).to_path_buf();
         let m3: Model3 = read_json(model3)?;
         let moc = std::fs::read(dir.join(&m3.file_references.moc)).context("reading .moc3")?;
-        let model = Model::load(core, &moc)?;
-
-        // Decode textures in parallel (PNG decode dominates load time).
         let images: Vec<Result<image::RgbaImage>> = std::thread::scope(|s| {
             let handles: Vec<_> = m3
                 .file_references
@@ -244,23 +250,47 @@ impl Live2D {
                 .map(|t| {
                     let p = dir.join(t);
                     s.spawn(move || -> Result<image::RgbaImage> {
-                        Ok(image::open(&p).with_context(|| format!("texture {}", p.display()))?.to_rgba8())
+                        let mut img = image::open(&p).with_context(|| format!("texture {}", p.display()))?.to_rgba8();
+                        crate::gpu::premultiply(&mut img);
+                        Ok(img)
                     })
                 })
                 .collect();
             handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
+        let images = images.into_iter().collect::<Result<Vec<_>>>()?;
+        Ok(Prepared { model3: model3.to_path_buf(), moc, images })
+    }
+
+    pub fn load(core: &'static Core, gpu: &Gpu, model3: &Path, vtube: Option<&Path>, idle_override: Option<&str>, rules_override: Option<&Vec<Rule>>) -> Result<Live2D> {
+        let p = Self::prepare(model3)?;
+        Self::load_prepared(core, gpu, p, vtube, idle_override, rules_override)
+    }
+
+    /// Finishes a load on the main thread: Cubism model, GPU textures, configs.
+    pub fn load_prepared(core: &'static Core, gpu: &Gpu, pre: Prepared, vtube: Option<&Path>, idle_override: Option<&str>, rules_override: Option<&Vec<Rule>>) -> Result<Live2D> {
+        let model3 = pre.model3.as_path();
+        let dir = model3.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let m3: Model3 = read_json(model3)?;
+        let tl = std::time::Instant::now();
+        let dbg = std::env::var_os("RIGRS_HITCH").is_some();
+        let model = Model::load(core, &pre.moc)?;
+        if dbg {
+            eprintln!("  moc revive + model init: {:.1} ms", tl.elapsed().as_secs_f32() * 1000.0);
+        }
         let mut textures = Vec::new();
         let mut texture_bytes = 0u64;
         let mut tex_size = 0u32;
-        for img in images {
-            let img = img?;
+        for img in pre.images {
             let (w, h) = img.dimensions();
             tex_size = tex_size.max(w);
             texture_bytes += w as u64 * h as u64 * 4;
-            textures.push(gpu.texture(img.into_raw(), w, h));
+            textures.push(gpu.texture_premultiplied(img.as_raw(), w, h));
         }
 
+        if dbg {
+            eprintln!("  textures uploaded: {:.1} ms", tl.elapsed().as_secs_f32() * 1000.0);
+        }
         let vt: Option<VtubeJson> = vtube.and_then(|p| match read_json(p) {
             Ok(v) => Some(v),
             Err(e) => {

@@ -305,6 +305,16 @@ fn ease(t: f32) -> f32 {
 
 pub fn run(app: &mut App, ctx: &Context) {
     ensure_fonts(app, ctx);
+    if let Some(name) = app.model_loading().map(|s| s.to_string()) {
+        egui::Area::new(egui::Id::new("model-loading")).order(egui::Order::Foreground).anchor(Align2::CENTER_BOTTOM, [0.0, -40.0]).interactable(false).show(ctx, |ui| {
+            egui::Frame::none().fill(Color32::from_black_alpha(170)).rounding(20.0).inner_margin(egui::Margin::symmetric(18.0, 10.0)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(22.0).color(Color32::WHITE));
+                    ui.label(RichText::new(format!("{} «{name}»…", tr("Загрузка модели"))).size(18.0).color(Color32::WHITE));
+                });
+            });
+        });
+    }
     hotkeys(app, ctx);
     scene_input(app, ctx);
     let vis = app.ui.visible;

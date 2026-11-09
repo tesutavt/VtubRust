@@ -388,6 +388,14 @@ fn pack(source: &Path, kind: &str) -> PackResult {
             let n = p.to_string_lossy().to_lowercase();
             !(n.ends_with(".cmo3") || n.ends_with(".can3") || n.ends_with(".psd") || n.ends_with(".zip") || n.ends_with(".mp4"))
         });
+    } else if source.is_dir() {
+        // Animated item made of frame images (VTS: a folder of PNGs); entry = the folder.
+        let mut rd: Vec<PathBuf> = std::fs::read_dir(source).map_err(|e| e.to_string())?.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
+        rd.sort();
+        if rd.len() > MAX_ASSET_FILES {
+            return Err(format!("more than {MAX_ASSET_FILES} files"));
+        }
+        files.extend(rd);
     } else {
         files.push(source.to_path_buf());
     }
@@ -403,7 +411,11 @@ fn pack(source: &Path, kind: &str) -> PackResult {
         let bytes = std::fs::read(f).map_err(|e| e.to_string())?;
         hasher_parts.push(rel.as_bytes().to_vec());
         hasher_parts.push(sha1_bytes(&[&bytes]).to_vec());
-        zw.start_file(rel, opts).map_err(|e| e.to_string())?;
+        // Images are already compressed: store them (packing a big model is much faster).
+        let lower = rel.to_lowercase();
+        let stored = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp3", ".ogg"].iter().any(|e| lower.ends_with(e));
+        let o = if stored { opts.compression_method(zip::CompressionMethod::Stored) } else { opts };
+        zw.start_file(rel, o).map_err(|e| e.to_string())?;
         zw.write_all(&bytes).map_err(|e| e.to_string())?;
     }
     let data = zw.finish().map_err(|e| e.to_string())?.into_inner();
@@ -1518,6 +1530,24 @@ mod tests {
         // Same content → same id.
         let (id2, _, _) = pack(&dir.join("m/a.model3.json"), "model").unwrap();
         assert_eq!(id, id2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Animated items are folders of frames (e.g. "ANIM_headpat"): they used to fail to pack.
+    #[test]
+    fn pack_frame_folder_item() {
+        let dir = std::env::temp_dir().join(format!("rigrs-net-frames-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Items/ANIM_pat")).unwrap();
+        for k in 0..3 {
+            std::fs::write(dir.join(format!("Items/ANIM_pat/f{k}.png")), vec![k as u8; 1000]).unwrap();
+        }
+        let (id, data, meta) = pack(&dir.join("Items/ANIM_pat"), "item").unwrap();
+        assert_eq!(meta.entry, "ANIM_pat");
+        assert!(verify(&data, id));
+        let out = extract(&data, &dir.join("out")).unwrap();
+        assert!(out.join("ANIM_pat").is_dir());
+        assert_eq!(std::fs::read_dir(out.join("ANIM_pat")).unwrap().count(), 3);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

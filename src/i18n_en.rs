@@ -879,4 +879,5 @@ app"),
 ("связь с хостом потеряна", "connection to the host lost"),
 ("Коллаб завершён", "Collab ended"),
 ("На телефоне в VTube Studio включите «3rd Party PC Clients» (внизу первой вкладки настроек). Кнопка «Stream to PC» / «Find server» в телефоне ищет только VTube Studio на ПК и с rigrs не работает.", "In the VTube Studio phone app turn on \"3rd Party PC Clients\" (bottom of the first settings tab). The phone's \"Stream to PC\" / \"Find server\" button only looks for VTube Studio on PC and does not work with rigrs."),
+("Загрузка модели", "Loading model"),
 ]
