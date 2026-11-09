@@ -929,6 +929,11 @@ pub fn wifi_card(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
         });
+        ui.label(
+            RichText::new(tr("На телефоне в VTube Studio включите «3rd Party PC Clients» (внизу первой вкладки настроек). Кнопка «Stream to PC» / «Find server» в телефоне ищет только VTube Studio на ПК и с rigrs не работает."))
+                .size(14.0)
+                .color(Color32::from_rgb(220, 70, 160)),
+        );
         ui.add_space(4.0);
         crate::vts_style::field_row(ui, "IP", |ui| input(ui, &mut app.settings.phone_ip, "192.168.1.23", !running));
         crate::vts_style::field_row(ui, "Порт", |ui| {
