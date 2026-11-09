@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::app::App;
+use crate::i18n::tr;
 use crate::mapping::NEUTRAL;
 use crate::scene::live2d::Xform;
 use crate::scene::{Body, Item};
@@ -624,7 +625,7 @@ impl Session {
         listener.set_nonblocking(true)?;
         let mut me = Session::base(Role::Host, s, cache);
         me.connected = true;
-        me.status = format!("hosting on port {}", s.port);
+        me.status = format!("{} {}", tr("хост на порту"), s.port);
         let (tx, stop, kbps, sent, recv) = (me.tx.clone(), me.stop.clone(), me.kbps, me.sent.clone(), me.recv.clone());
         std::thread::Builder::new().name("net-listen".into()).spawn(move || {
             let mut next: u16 = 1;
@@ -652,7 +653,7 @@ impl Session {
     pub fn join(s: &NetSettings, cache: PathBuf) -> anyhow::Result<Session> {
         let addr = s.address.trim().to_string();
         if addr.is_empty() {
-            anyhow::bail!("enter the host address");
+            anyhow::bail!("{}", tr("введите адрес хоста"));
         }
         let target = if addr.contains(':') && !addr.starts_with('[') && addr.matches(':').count() == 1 || addr.ends_with(']') || addr.contains("]:") {
             addr.clone()
@@ -680,7 +681,7 @@ impl Session {
             }
         })?;
         let mut me = me;
-        me.status = "connecting…".into();
+        me.status = tr("подключение…").into();
         Ok(me)
     }
 
@@ -746,7 +747,7 @@ impl Session {
             return;
         }
         if let Some(c) = self.conns.remove(&id) {
-            c.conn.json(&json!({ "t": "reject", "reason": "removed by host" }));
+            c.conn.json(&json!({ "t": "reject", "reason": "хост удалил вас из коллаба" }));
             c.conn.close();
         }
         self.peer_left(id);
@@ -934,7 +935,7 @@ impl Session {
                 self.data_fps = v["fps"].as_u64().unwrap_or(30).clamp(10, 60) as u32;
                 self.host_nick = v["host"].as_str().unwrap_or("").to_string();
                 self.connected = true;
-                self.status = "connected".into();
+                self.status = tr("подключено").into();
                 for p in v["peers"].as_array().into_iter().flatten() {
                     let id = p["id"].as_u64().unwrap_or(0) as u16;
                     if id != self.my_id {
@@ -948,9 +949,9 @@ impl Session {
                 }
             }
             "reject" => {
-                self.ended = Some(v["reason"].as_str().unwrap_or("rejected").to_string());
+                self.ended = Some(tr(v["reason"].as_str().unwrap_or("отказано в подключении")).to_string());
             }
-            "end" => self.ended = Some("the host ended the session".into()),
+            "end" => self.ended = Some(tr("хост завершил сессию").into()),
             "join" if self.role == Role::Client => {
                 let id = v["id"].as_u64().unwrap_or(0) as u16;
                 if id != self.my_id {
@@ -1029,7 +1030,7 @@ impl Session {
                     }
                     self.peer_left(from);
                 } else {
-                    self.ended = Some("the host ended the session".into());
+                    self.ended = Some(tr("хост завершил сессию").into());
                 }
             }
             _ => {}
@@ -1043,17 +1044,17 @@ impl Session {
             c.conn.close();
         };
         if v["v"].as_u64() != Some(PROTOCOL as u64) {
-            reject(c, "different app/protocol version");
+            reject(c, "другая версия программы или протокола");
             self.conns.remove(&from);
             return;
         }
         if v["proof"].as_str() != Some(proof(&c.nonce, &self.password).as_str()) {
-            reject(c, "wrong password");
+            reject(c, "неверный пароль");
             self.conns.remove(&from);
             return;
         }
         if self.participant_count() >= MAX_PARTICIPANTS {
-            reject(c, "the session is full (6 participants)");
+            reject(c, "коллаб заполнен (6 участников)");
             self.conns.remove(&from);
             return;
         }
@@ -1076,10 +1077,10 @@ impl Session {
                 self.conns.insert(id, HostConn { conn, authed: false, nonce: n, since: Instant::now(), ping_sent: None });
             }
             Event::Connected(conn) => {
-                self.status = "authenticating…".into();
+                self.status = tr("проверка пароля…").into();
                 self.conns.insert(HOST_ID, HostConn { conn, authed: true, nonce: String::new(), since: Instant::now(), ping_sent: None });
             }
-            Event::ConnectFailed(e) => self.ended = Some(format!("cannot connect: {e}")),
+            Event::ConnectFailed(e) => self.ended = Some(format!("{}: {e}", tr("не удалось подключиться"))),
             Event::Frame(from, kind, data) => match kind {
                 K_JSON => {
                     if let Ok(v) = serde_json::from_slice::<Value>(&data) {
@@ -1106,7 +1107,7 @@ impl Session {
                 }
                 Role::Client => {
                     if self.ended.is_none() {
-                        self.ended = Some("connection to the host lost".into());
+                        self.ended = Some(tr("связь с хостом потеряна").into());
                     }
                 }
             },
@@ -1151,6 +1152,11 @@ impl Session {
                     // u16::MAX marks "our own files".
                     a.owner = Some(u16::MAX);
                     a.meta = Some(meta.clone());
+                    // Our files are already on disk: when a peer uses the very same model or item
+                    // (same content hash), load it from there. Never deleted (only `cache` is).
+                    if a.dir.is_none() {
+                        a.dir = p.parent().map(|d| d.to_path_buf());
+                    }
                     let waiting: Vec<u16> = a.waiting.drain().collect();
                     if self.role == Role::Client && self.connected {
                         self.send_to(HOST_ID, &json!({ "t": "asset", "meta": meta }));
@@ -1303,7 +1309,7 @@ pub fn pump(app: &mut App, dt: f32) {
     s.poll_jobs();
     s.update_rate();
     if let Some(e) = s.ended.clone() {
-        app.toast(format!("Коллаб завершён: {e}"));
+        app.toast(format!("{}: {e}", tr("Коллаб завершён")));
         drop(s);
         return;
     }
@@ -1589,7 +1595,7 @@ mod tests {
             step(&mut bad);
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(bad.ended.as_deref(), Some("wrong password"));
+        assert_eq!(bad.ended.as_deref(), Some("неверный пароль"));
         drop(client);
         drop(host);
         let _ = std::fs::remove_dir_all(&base);

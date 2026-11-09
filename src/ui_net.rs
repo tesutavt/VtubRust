@@ -657,10 +657,10 @@ fn session_controls(app: &mut App, ui: &mut egui::Ui) {
 // ---------------------------------------------------------------- session control screen
 
 fn bars(ui: &mut egui::Ui, up: f32, down: f32, tip: String) {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(176.0, 26.0), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(120.0, 26.0), Sense::hover());
     let p = ui.painter();
-    let top = Rect::from_min_size(rect.min + Vec2::new(0.0, 2.0), Vec2::new(164.0, 9.0));
-    let bot = Rect::from_min_size(rect.min + Vec2::new(0.0, 15.0), Vec2::new(164.0, 9.0));
+    let top = Rect::from_min_size(rect.min + Vec2::new(0.0, 2.0), Vec2::new(108.0, 9.0));
+    let bot = Rect::from_min_size(rect.min + Vec2::new(0.0, 15.0), Vec2::new(108.0, 9.0));
     p.rect_filled(top, 0.0, Color32::from_rgb(214, 238, 220));
     p.rect_filled(Rect::from_min_size(top.min, Vec2::new(top.width() * up.clamp(0.0, 1.0), top.height())), 0.0, Color32::from_rgb(130, 200, 150));
     p.rect_filled(bot, 0.0, Color32::from_rgb(250, 220, 226));

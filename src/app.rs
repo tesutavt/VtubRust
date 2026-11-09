@@ -420,6 +420,17 @@ impl App {
         if app.settings.mic.on {
             app.set_mic(true);
         }
+        // Dev hook for multiplayer tests: RIGRS_NET=host | join:<address>.
+        if let Ok(v) = std::env::var("RIGRS_NET") {
+            app.settings.net.host = v == "host";
+            if let Some(addr) = v.strip_prefix("join:") {
+                app.settings.net.address = addr.to_string();
+            }
+            if let Ok(n) = std::env::var("RIGRS_NET_NICK") {
+                app.settings.net.nickname = n;
+            }
+            crate::net::start(&mut app);
+        }
         crate::updater::cleanup_old();
         if app.settings.update_check && std::env::var_os("RIGRS_DATA").is_none() || std::env::var_os("RIGRS_FAKE_VERSION").is_some() {
             app.updater.check();
