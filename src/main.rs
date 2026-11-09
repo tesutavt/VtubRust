@@ -41,6 +41,8 @@ mod spout;
 mod stats;
 mod tracking;
 mod perfect_sync;
+mod mocopi;
+mod discord;
 mod net;
 mod ui_net;
 mod ui;

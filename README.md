@@ -92,12 +92,19 @@ The tracker runs as a separate process (OpenSeeFace / Mediapipe); its load is sh
 
 **VBridger / Perfect Sync**: with NVIDIA, phone or Mediapipe tracking every raw ARKit blendshape (`EyeBlinkLeft`, `JawOpen`, `MouthFunnel`, ...) and the VBridger-style combinations (`MouthPressLipOpen`, `MouthPuckerWiden`, `MouthShrug`, `CheekSquint`, `EyeSquint`, `BrowOuterUp`) are available as inputs, so models rigged for VBridger can map them by name. VBridger itself still works through the plugin API; a parameter it creates with the same name takes priority.
 
+**Settings → General** (VTS cards that used to be stubs):
+- **Wi-Fi connection**: connect the VTS phone app ("3rd Party PC Clients"), "Find phone" (broadcast discovery), "Show IP list".
+- **USB connection**: the same over a USB tethering link (iPhone Personal Hotspot / Android USB tethering); VTS's own USB protocol is closed.
+- **mocopi**: Sony mocopi receiver (UDP 12351, Sony Motion Format) with every `Mocopi*` parameter from the VTS wiki; head angles fall back to face tracking, values fade out without data.
+- **Discord**: Rich Presence (model / collab / session time) through the local Discord IPC; needs your Discord Application ID.
+
 **Collab (VNet-style multiplayer)**: purple buttons in the main menu, above "hide UI" (big = setup, small = session control). Host / join with nickname and password, up to 6 participants, Data FPS 10-60. Models and items are shared automatically (zipped, sent through the host, verified by hash, kept in a temporary cache; 150 files / 300 MB per model, 95 MB per file). Movement = Live2D parameters + model/item placement; receivers run physics and smooth with a per-participant buffer. Per participant: show model, show items, in front of my model, "you control position", fixed ordering. No Steam relay: the host must be reachable over TCP (LAN, port forwarding or Tailscale / ZeroTier / Radmin VPN), default port 25580.
 
 <p align="center">
   <img src="screenshots/vnet_setup.png" width="49%"> <img src="screenshots/vnet_control.png" width="49%">
   <img src="screenshots/tracker_select.png" width="49%"> <img src="screenshots/tracker_nvidia.png" width="49%">
   <img src="screenshots/tracker_phone.png" width="49%"> <img src="screenshots/perfect_sync_vbridger.png" width="49%">
+  <img src="screenshots/phone_wifi_usb.png" width="49%"> <img src="screenshots/discord_mocopi.png" width="49%">
 </p>
 
 ## 🌟 Features

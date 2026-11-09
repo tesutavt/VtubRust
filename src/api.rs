@@ -1065,6 +1065,9 @@ fn find_input(app: &App, name: &str) -> Option<Value> {
     if let Some(p) = app.api_custom.get(name) {
         return Some(json!({ "name": p.name, "addedBy": p.added_by, "value": p.value, "min": p.min, "max": p.max, "defaultValue": p.default }));
     }
+    if let (Some(v), Some((mn, mx))) = (crate::mocopi::value(name), crate::mocopi::range_of(name)) {
+        return Some(json!({ "name": name, "addedBy": "VTube Studio", "value": v, "min": mn, "max": mx, "defaultValue": 0.0 }));
+    }
     // Perfect Sync / VBridger inputs computed by our own trackers.
     let v = crate::perfect_sync::value(name)?;
     let (mn, mx, df) = crate::perfect_sync::range_of(name);

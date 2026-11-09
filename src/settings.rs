@@ -174,6 +174,15 @@ pub struct Settings {
     pub phone_port: u16,
     /// Local UDP port the phone sends to.
     pub phone_local_port: u16,
+    /// Sony mocopi receiver.
+    pub mocopi: bool,
+    pub mocopi_port: u16,
+    /// Show the mocopi parameters in the input lists (VTS: off by default).
+    pub mocopi_show_params: bool,
+    /// Discord Rich Presence.
+    pub discord: bool,
+    pub discord_app_id: String,
+    pub discord_show_model: bool,
     /// VNet-style multiplayer.
     pub net: crate::net::NetSettings,
     /// 0 = face, 1 = hands, 2 = face + hands
@@ -320,6 +329,12 @@ impl Default for Settings {
             phone_port: 21412,
             phone_local_port: 21413,
             net: Default::default(),
+            mocopi: false,
+            mocopi_port: crate::mocopi::DEFAULT_PORT,
+            mocopi_show_params: false,
+            discord: false,
+            discord_app_id: String::new(),
+            discord_show_model: true,
             track_type: 0,
             track_threads: 1,
             track_port: 11573,

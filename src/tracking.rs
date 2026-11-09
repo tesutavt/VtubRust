@@ -735,6 +735,60 @@ pub fn list_caps(exe: &Path, camera: i32) -> Vec<CamCap> {
         .collect()
 }
 
+/// Typical phone addresses on a USB tethering link (iPhone "Personal Hotspot" over USB,
+/// Android "USB tethering").
+pub const USB_TETHER_PHONES: [&str; 3] = ["172.20.10.1", "192.168.42.129", "192.168.42.1"];
+
+/// Finds phones running the VTube Studio app ("3rd Party PC Clients" on): broadcasts a
+/// short data request and collects who answers. `extra` are addresses tried directly
+/// (USB tethering). Blocks for about `wait`.
+pub fn discover_phones(phone_port: u16, extra: &[&str], wait: Duration) -> Vec<(std::net::IpAddr, bool)> {
+    let Ok(sock) = UdpSocket::bind(("0.0.0.0", 0)) else { return Vec::new() };
+    let _ = sock.set_broadcast(true);
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(100)));
+    let port = sock.local_addr().map(|a| a.port()).unwrap_or(0);
+    let req = serde_json::json!({ "messageType": "iOSTrackingDataRequest", "time": 0.5, "sentBy": "rigrs-discovery", "ports": [port] }).to_string();
+    let mut targets: Vec<String> = vec!["255.255.255.255".into()];
+    targets.extend(extra.iter().map(|s| s.to_string()));
+    let t0 = Instant::now();
+    let mut found: Vec<(std::net::IpAddr, bool)> = Vec::new();
+    let mut buf = vec![0u8; 65536];
+    let mut last = Instant::now() - Duration::from_secs(1);
+    while t0.elapsed() < wait {
+        if last.elapsed() > Duration::from_millis(500) {
+            for t in &targets {
+                let _ = sock.send_to(req.as_bytes(), (t.as_str(), phone_port));
+            }
+            last = Instant::now();
+        }
+        if let Ok((n, from)) = sock.recv_from(&mut buf) {
+            if parse_phone(&buf[..n]).is_some() && !found.iter().any(|f| f.0 == from.ip()) {
+                let usb = extra.iter().any(|e| *e == from.ip().to_string());
+                found.push((from.ip(), usb));
+            }
+        }
+    }
+    found
+}
+
+/// This computer's IPv4 addresses that a phone can reach (best effort, no packets sent).
+pub fn local_ips() -> Vec<String> {
+    let mut v = Vec::new();
+    for probe in ["8.8.8.8:80", "192.168.1.1:80", "10.0.0.1:80", "172.20.10.1:80", "192.168.42.129:80"] {
+        if let Ok(s) = UdpSocket::bind("0.0.0.0:0") {
+            if s.connect(probe).is_ok() {
+                if let Ok(a) = s.local_addr() {
+                    let ip = a.ip().to_string();
+                    if !a.ip().is_unspecified() && !v.contains(&ip) {
+                        v.push(ip);
+                    }
+                }
+            }
+        }
+    }
+    v
+}
+
 /// Lists cameras via `facetracker -l 1`. Returns (index, name).
 pub fn list_cameras(exe: &Path) -> Vec<(i32, String)> {
     let mut cmd = Command::new(exe);
@@ -954,4 +1008,65 @@ pub fn hand_inputs(v: &mut Inputs, h: &HandsFrame, o: &TrackOptions) {
         (Some(a), Some(b)) => (dist3(a.pts[9], b.pts[9]) * 1.5).clamp(0.0, 1.0),
         _ => 0.0,
     };
+}
+
+#[cfg(test)]
+mod phone_tests {
+    use super::*;
+
+    /// A fake phone answers the discovery request on the port it names.
+    #[test]
+    fn discovery_finds_fake_phone() {
+        let phone = UdpSocket::bind(("127.0.0.1", 21499)).unwrap();
+        phone.set_read_timeout(Some(Duration::from_millis(3000))).unwrap();
+        let t = std::thread::spawn(move || {
+            let mut buf = [0u8; 2048];
+            let (n, from) = phone.recv_from(&mut buf).unwrap();
+            let req: serde_json::Value = serde_json::from_slice(&buf[..n]).unwrap();
+            assert_eq!(req["messageType"], "iOSTrackingDataRequest");
+            let port = req["ports"][0].as_u64().unwrap() as u16;
+            let data = br#"{"Timestamp":1,"Hotkey":-1,"FaceFound":true,"Rotation":{"x":350,"y":10,"z":0},"Position":{"x":0,"y":0,"z":0},"EyeLeft":{"x":0,"y":0,"z":0},"EyeRight":{"x":0,"y":0,"z":0},"BlendShapes":[{"k":"JawOpen","v":0.5},{"k":"TongueOut","v":0.3}]}"#;
+            phone.send_to(data, (from.ip(), port)).unwrap();
+        });
+        let found = discover_phones(21499, &["127.0.0.1"], Duration::from_millis(1500));
+        t.join().unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0.to_string(), "127.0.0.1");
+        assert!(found[0].1);
+    }
+
+    #[test]
+    fn parse_phone_packet() {
+        let data = br#"{"FaceFound":true,"Hotkey":3,"Rotation":{"x":350,"y":10,"z":5},"Position":{"x":1,"y":2,"z":3},"BlendShapes":[{"k":"JawOpen","v":0.5},{"k":"EyeBlinkLeft","v":1.0},{"k":"TongueOut","v":0.3}]}"#;
+        let (f, hk) = parse_phone(data).unwrap();
+        assert_eq!(hk, 3);
+        assert!(f.success);
+        assert_eq!(f.bs[bs::JAW_OPEN], 0.5);
+        assert_eq!(f.tongue, 0.3);
+        assert!((f.euler[0] - 10.0).abs() < 1e-3);
+        assert_eq!(f.eye_open[1], 0.0);
+    }
+
+    #[test]
+    fn parse_nvidia_packet() {
+        let mut exp = vec![0.0f32; 53];
+        exp[26] = 0.8; // jawOpen
+        exp[2] = 0.2;
+        exp[3] = 0.4; // inner brow L/R → averaged
+        let mut pts = vec![640.0f32, 480.0];
+        for i in 0..126 {
+            pts.push(100.0 + i as f32);
+            pts.push(200.0);
+        }
+        let j = serde_json::json!({ "exp": exp, "cal": [], "rot": [0.0, 0.0, 0.0, 1.0], "pos": [0, 0, 0], "pts": pts, "cnf": 40.0 });
+        let mut b = j.to_string().into_bytes();
+        b.push(0);
+        let Some(NvPacket::Face(f)) = parse_nvidia(&b) else { panic!() };
+        assert!(f.success);
+        assert!((f.bs[bs::JAW_OPEN] - 0.8).abs() < 1e-6);
+        assert!((f.bs[bs::BROW_INNER_UP] - 0.3).abs() < 1e-6);
+        assert_eq!(f.n_mp, 126);
+        let cal = serde_json::json!({ "exp": [], "cal": [0.1, 0.2], "rot": [], "pts": [] }).to_string();
+        assert!(matches!(parse_nvidia(cal.as_bytes()), Some(NvPacket::Calibration(c)) if c.len() == 2));
+    }
 }

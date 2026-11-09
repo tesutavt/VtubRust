@@ -91,6 +91,13 @@ pub struct App {
     pub tracker: Option<Tracker>,
     /// VNet-style collab session.
     pub net: Option<crate::net::Session>,
+    pub mocopi: Option<crate::mocopi::Receiver>,
+    pub mocopi_error: Option<String>,
+    pub discord: Option<crate::discord::Presence>,
+    pub started_unix: u64,
+    /// Phone discovery running in the background (Wi-Fi / USB cards).
+    pub phone_scan: Option<(bool, Arc<Mutex<Option<Vec<(std::net::IpAddr, bool)>>>>)>,
+    pub phone_found: Vec<(std::net::IpAddr, bool)>,
     pub tracker_error: Option<String>,
     pub tracking: bool,
     pub inputs: Inputs,
@@ -292,6 +299,12 @@ impl App {
             bg_sprite: None,
             tracker: None,
             net: None,
+            mocopi: None,
+            mocopi_error: None,
+            discord: None,
+            started_unix: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+            phone_scan: None,
+            phone_found: Vec::new(),
             tracker_error: None,
             tracking: false,
             inputs: NEUTRAL,
@@ -1542,6 +1555,7 @@ impl App {
         let fx_screen = self.fx.screen;
 
         crate::net::pump(self, dt);
+        crate::ui_net::pump_extras(self, dt);
 
         // Simulation
         let physics = self.settings.physics;

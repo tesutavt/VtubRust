@@ -1190,8 +1190,8 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
             }
         });
     });
-    stub_card(ui, tr("Настройки Wi-Fi-соединения"), &["Запустить сервер"], "Сервер отключен");
-    stub_card(ui, tr("Настройки USB-соединения"), &["Подключиться через USB"], "Отключено");
+    crate::ui_net::wifi_card(app, ui);
+    crate::ui_net::usb_card(app, ui);
     crate::ui_hotkeys::api_card(app, ui);
     crate::ui_hotkeys::editor_card(app, ui);
     section(ui, tr("Настройка ввода мыши"), |ui| {
@@ -1233,8 +1233,8 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
     crate::ui_vts::sound_card(app, ui);
     crate::ui_hotkeys::mic_card(app, ui);
     crate::ui_hotkeys::twitch_card(app, ui);
-    stub_card(ui, "Discord", &["Войти и активировать"], "Отключено");
-    stub_card(ui, "mocopi", &["Запустить", "Показывать параметры трекинга"], "Отключено");
+    crate::ui_net::discord_card(app, ui);
+    crate::ui_net::mocopi_card(app, ui);
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1664,6 +1664,9 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
             let mut v = vec![Row { bold: String::new(), text: "(нет) — только автоморгание/дыхание".into(), enabled: true }];
             v.extend(INPUT_NAMES.iter().enumerate().map(|(k, n)| Row { bold: (*n).into(), text: format!("  текущее {:+.2}", app.inputs[k]), enabled: true }));
             v.extend(crate::perfect_sync::snapshot().into_iter().map(|(n, x)| Row { bold: n.into(), text: format!("  Perfect Sync / VBridger {x:+.2}"), enabled: true }));
+            if app.settings.mocopi_show_params {
+                v.extend(crate::mocopi::snapshot().into_iter().map(|(n, x)| Row { bold: n.into(), text: format!("  mocopi {x:+.1}"), enabled: true }));
+            }
             ("Выберите вход трекинга для этого параметра.", v)
         }
         Modal::RuleOutput(_) => {
@@ -1900,8 +1903,10 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
                             String::new()
                         } else if let Some(n) = INPUT_NAMES.get(i - 1) {
                             n.to_string()
+                        } else if let Some(n) = ps.get(i - 1 - INPUT_NAMES.len()) {
+                            n.to_string()
                         } else {
-                            ps.get(i - 1 - INPUT_NAMES.len()).map(|n| n.to_string()).unwrap_or_default()
+                            crate::mocopi::PARAMS.get(i - 1 - INPUT_NAMES.len() - ps.len()).map(|p| p.0.to_string()).unwrap_or_default()
                         };
                     } else if let Some(pid) = a.model.param_ids.get(i) {
                         rule.output = pid.clone();
