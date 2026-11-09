@@ -15,7 +15,7 @@ use crate::library::ItemEntry;
 use crate::scene::{Body, LAYER_BACK, LAYER_FRONT};
 use crate::ui_hotkeys::{dim, group_title, pink_row};
 
-const BLUE_BTN: Color32 = Color32::from_rgb(14, 150, 240);
+const BLUE_BTN: Color32 = crate::vts_style::BLUE;
 const RED_BTN: Color32 = Color32::from_rgb(222, 88, 116);
 const PINK: Color32 = Color32::from_rgb(236, 30, 160);
 
@@ -231,8 +231,9 @@ pub fn item_picker(app: &mut App, ctx: &Context) {
         ui.add_space(8.0);
         egui::Frame::none().fill(Color32::WHITE).rounding(10.0).inner_margin(10.0).show(ui, |ui| {
             for (k, label) in ["Все", "Анимированные", "Live2D"].iter().enumerate() {
-                if ui.radio(app.ui.item_kind == k as u8, RichText::new(tr(label)).size(19.0)).clicked() {
-                    app.ui.item_kind = k as u8;
+                let mut kind = app.ui.item_kind;
+                if crate::vts_style::radio(ui, &mut kind, k as u8, label).changed() {
+                    app.ui.item_kind = kind;
                 }
             }
         });
@@ -445,7 +446,7 @@ pub fn item_config(app: &mut App, ctx: &Context) {
                 if pink_row(ui, &mut front_on, if is_l2d { "Передняя часть здесь" } else { "Предмет здесь" }, &format!("{}: {}", tr("Слой"), layer_label(if it.cfg.layer.is_empty() { LAYER_FRONT } else { &it.cfg.layer }))) {
                     it.cfg.layer = if front_on { LAYER_FRONT.to_string() } else { String::new() };
                 }
-                if front_on && ui.button(tr("Выбрать слой…")).clicked() {
+                if front_on && crate::vts_style::button(ui, tr("Выбрать слой…")).clicked() {
                     sub = Some(ItemSub::Layer(0));
                 }
                 if is_l2d {
@@ -453,7 +454,7 @@ pub fn item_config(app: &mut App, ctx: &Context) {
                     if pink_row(ui, &mut back_on, "Задняя часть здесь", &format!("{}: {}", tr("Слой"), layer_label(if it.cfg.split_back.is_empty() { LAYER_BACK } else { &it.cfg.split_back }))) {
                         it.cfg.split_back = if back_on { LAYER_BACK.to_string() } else { String::new() };
                     }
-                    if back_on && ui.button(tr("Выбрать слой для задней части…")).clicked() {
+                    if back_on && crate::vts_style::button(ui, tr("Выбрать слой для задней части…")).clicked() {
                         sub = Some(ItemSub::Layer(1));
                     }
                     if blue_card(ui, "Разделить Live2D-предмет по слою", &format!("{}: {}", tr("Слой"), if it.cfg.split.is_empty() { tr("не выбран").to_string() } else { it.cfg.split.clone() }), "SPLIT") {
@@ -497,7 +498,7 @@ pub fn item_config(app: &mut App, ctx: &Context) {
                         it.cfg.order = o;
                     }
                     ui.label(tr("Сглаживание"));
-                    ui.add(egui::Slider::new(&mut it.cfg.smoothing, 0.0..=1.0));
+                    crate::vts_style::slider(ui, &mut it.cfg.smoothing, 0.0..=1.0);
                 });
                 ui.horizontal(|ui| {
                     ui.label(tr("Размер"));
@@ -521,7 +522,7 @@ pub fn item_config(app: &mut App, ctx: &Context) {
                     if s.frame_count() > 1 {
                         ui.horizontal(|ui| {
                             ui.label(tr("FPS анимации"));
-                            ui.add(egui::Slider::new(&mut it.cfg.fps, 0.0..=60.0));
+                            crate::vts_style::slider(ui, &mut it.cfg.fps, 0.0..=60.0);
                         });
                     }
                 }
@@ -635,7 +636,7 @@ fn item_sub(app: &mut App, ctx: &Context, idx: usize) {
             for (k, n) in ["X", "Y", "Z"].iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.label(format!("{} {n}", tr("Множитель")));
-                    ui.add(egui::Slider::new(&mut it.cfg.angle_mult[k], -3.0..=3.0));
+                    crate::vts_style::slider(ui, &mut it.cfg.angle_mult[k], -3.0..=3.0);
                 });
             }
             pink_row(ui, &mut it.cfg.default_unpinned, "Возвращать к умолчанию, когда не закреплён", "Предмет не следует за трекингом, пока не закреплён");

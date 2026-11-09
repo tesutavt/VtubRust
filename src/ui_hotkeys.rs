@@ -170,7 +170,7 @@ pub fn hotkeys_tab(app: &mut App, ui: &mut egui::Ui) {
                 "MoveModel" => {
                     ui.horizontal(|ui| {
                         ui.add_space(24.0);
-                        if ui.button(tr("Записать текущую позицию модели")).clicked() {
+                        if crate::vts_style::button(ui, tr("Записать текущую позицию модели")).clicked() {
                             if let Some(xf) = cur_xf {
                                 h.position = hotkeys::HkPosition { x: xf.pos[0] / (vw / 2.0), y: xf.pos[1] / (vh / 2.0), z: xf.scale, rotation: xf.rot };
                             }
@@ -198,11 +198,11 @@ pub fn hotkeys_tab(app: &mut App, ui: &mut egui::Ui) {
                     let n = h.extra.get("ColorScreenMultiplyPreset").and_then(|p| p["ArtMeshMultiplyAndScreenColors"].as_array()).map(|a| a.len()).unwrap_or(0);
                     ui.horizontal(|ui| {
                         ui.add_space(24.0);
-                        if ui.button(tr("Записать текущие цвета модели")).clicked() {
+                        if crate::vts_style::button(ui, tr("Записать текущие цвета модели")).clicked() {
                             let colors = art_colors.clone();
                             h.extra.insert("ColorScreenMultiplyPreset".into(), serde_json::json!({ "ArtMeshMultiplyAndScreenColors": colors }));
                         }
-                        if ui.button(tr("Очистить")).on_hover_text(tr("Пустой пресет снимает загруженный пресет")).clicked() {
+                        if crate::vts_style::button(ui, tr("Очистить")).on_hover_text(tr("Пустой пресет снимает загруженный пресет")).clicked() {
                             h.extra.insert("ColorScreenMultiplyPreset".into(), serde_json::json!({ "ArtMeshMultiplyAndScreenColors": [] }));
                         }
                         ui.label(format!("{}: {n}", tr("частей в пресете")));
@@ -212,7 +212,7 @@ pub fn hotkeys_tab(app: &mut App, ui: &mut egui::Ui) {
                     let on = h.extra.get("ColorOverlay").map(|o| o["On"].as_bool().unwrap_or(false)).unwrap_or(false);
                     ui.horizontal(|ui| {
                         ui.add_space(24.0);
-                        if ui.button(tr("Записать текущие настройки освещения")).clicked() {
+                        if crate::vts_style::button(ui, tr("Записать текущие настройки освещения")).clicked() {
                             h.extra.insert("ColorOverlay".into(), light_now.clone());
                         }
                         ui.label(if on { tr("наложение: вкл.") } else { tr("наложение: выкл.") });
@@ -248,18 +248,18 @@ pub fn hotkeys_tab(app: &mut App, ui: &mut egui::Ui) {
             if !(g.gesture_left.is_empty() && g.gesture_right.is_empty()) {
                 ui.horizontal(|ui| {
                     ui.add_space(24.0);
-                    if ui.button(tr("Правая рука…")).clicked() {
+                    if crate::vts_style::button(ui, tr("Правая рука…")).clicked() {
                         open = Some(Modal::HkGesture(i, false));
                     }
                     let mut or = h.hand_gesture_settings.gesture_combinator == "OR";
-                    if ui.checkbox(&mut or, tr("Любая из рук (ИЛИ)")).changed() {
+                    if crate::ui::toggle(ui, &mut or, tr("Любая из рук (ИЛИ)")).changed() {
                         h.hand_gesture_settings.gesture_combinator = if or { "OR" } else { "AND" }.into();
                     }
                 });
                 ui.horizontal(|ui| {
                     ui.add_space(24.0);
-                    ui.checkbox(&mut h.hand_gesture_settings.allow_mirrored_gesture, tr("Разрешить зеркальный жест"));
-                    ui.checkbox(&mut h.hand_gesture_settings.deactivate_exp_when_gesture_not_detected, tr("Выключать, когда жест пропал"));
+                    crate::ui::toggle(ui, &mut h.hand_gesture_settings.allow_mirrored_gesture, tr("Разрешить зеркальный жест"));
+                    crate::ui::toggle(ui, &mut h.hand_gesture_settings.deactivate_exp_when_gesture_not_detected, tr("Выключать, когда жест пропал"));
                 });
                 ui.horizontal(|ui| {
                     ui.add_space(24.0);
@@ -573,7 +573,7 @@ fn range_row(ui: &mut egui::Ui, r: &mut hotkeys::Range, lo: f32, hi: f32, dflt: 
         if r.max < r.min {
             r.max = r.min;
         }
-        if ui.button("↺").on_hover_text(tr("Сбросить")).clicked() {
+        if crate::vts_style::button(ui, "↺").on_hover_text(tr("Сбросить")).clicked() {
             r.min = dflt.0;
             r.max = dflt.1;
         }
@@ -610,7 +610,7 @@ fn top_bar(app: &mut App, ctx: &Context, id: &str, on: &mut bool, test: &mut boo
     egui::Area::new(egui::Id::new(id)).order(egui::Order::Tooltip).fixed_pos(Pos2::new(screen.center().x - 300.0, 14.0)).show(ctx, |ui| {
         ui.horizontal(|ui| {
             let (txt, fill) = if *on { ("ON", Color32::from_rgb(120, 200, 140)) } else { ("OFF", Color32::from_rgb(250, 170, 176)) };
-            if ui.add_sized([150.0, 48.0], egui::Button::new(RichText::new(txt).size(26.0).strong().color(Color32::from_rgb(90, 60, 66))).fill(fill).rounding(8.0)).clicked() {
+            if ui.add_sized([150.0, 48.0], egui::Button::new(RichText::new(txt).size(26.0).strong().color(Color32::from_rgb(90, 60, 66))).fill(fill).rounding(3.0)).clicked() {
                 *on = !*on;
             }
             ui.add_space(70.0);
@@ -668,7 +668,7 @@ fn twitch_triggers_dialog(app: &mut App, ctx: &Context, i: usize) {
             if t.cooldown_active {
                 ui.horizontal(|ui| {
                     ui.add_space(52.0);
-                    ui.add(egui::Slider::new(&mut t.cooldown_seconds, 1.0..=3600.0).logarithmic(true).suffix(tr(" с")));
+                    ui.add(egui::DragValue::new(&mut t.cooldown_seconds).range(1.0..=3600.0).speed(1.0).suffix(tr(" с")));
                 });
             }
             pink_row(ui, &mut t.reset_active, "Сброс после периода ожидания", "Автоматический сброс горячей клавиши");
@@ -690,7 +690,7 @@ fn twitch_triggers_dialog(app: &mut App, ctx: &Context, i: usize) {
                     if ui.add_sized([300.0, 30.0], egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(Color32::from_rgb(14, 150, 240))).clicked() {
                         pick_reward = true;
                     }
-                    if ui.button("↺").on_hover_text(tr("Сбросить")).clicked() {
+                    if crate::vts_style::button(ui, "↺").on_hover_text(tr("Сбросить")).clicked() {
                         t.redeem_id.clear();
                         t.redeem_name.clear();
                     }
@@ -727,15 +727,15 @@ fn twitch_triggers_dialog(app: &mut App, ctx: &Context, i: usize) {
                 let r = &mut t.restrict;
                 ui.horizontal_wrapped(|ui| {
                     ui.add_space(52.0);
-                    ui.checkbox(&mut r.you, tr("Вы"));
-                    ui.checkbox(&mut r.subs, tr("Подписчики"));
-                    ui.checkbox(&mut r.mods, tr("Модераторы"));
-                    ui.checkbox(&mut r.vips, "VIP");
-                    ui.checkbox(&mut r.artists, tr("Художники"));
+                    crate::ui::toggle(ui, &mut r.you, tr("Вы"));
+                    crate::ui::toggle(ui, &mut r.subs, tr("Подписчики"));
+                    crate::ui::toggle(ui, &mut r.mods, tr("Модераторы"));
+                    crate::ui::toggle(ui, &mut r.vips, "VIP");
+                    crate::ui::toggle(ui, &mut r.artists, tr("Художники"));
                 });
                 ui.horizontal(|ui| {
                     ui.add_space(52.0);
-                    ui.checkbox(&mut r.by_name, tr("Имена:"));
+                    crate::ui::toggle(ui, &mut r.by_name, tr("Имена:"));
                     let mut names = r.user_names.join(", ");
                     if ui.add_enabled(r.by_name, egui::TextEdit::singleline(&mut names).desired_width(300.0)).changed() {
                         r.user_names = names.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
@@ -752,7 +752,7 @@ fn twitch_triggers_dialog(app: &mut App, ctx: &Context, i: usize) {
         if let Some(left) = cooldown_left {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("{} {:.0} {}", tr("Период ожидания активен:"), left, tr("с"))).color(PINK));
-                if ui.small_button("✖").on_hover_text(tr("Отменить период ожидания и сброс")).clicked() {
+                if crate::vts_style::button(ui, "✖").on_hover_text(tr("Отменить период ожидания и сброс")).clicked() {
                     cancel_cd = true;
                 }
             });
@@ -795,7 +795,7 @@ pub fn sound_params_ui(ui: &mut egui::Ui, salt: &str, p: &mut crate::audio::Soun
             ui.label(RichText::new(&f.file).size(14.0));
             ui.add(egui::DragValue::new(&mut f.volume).speed(0.01).range(0.0..=2.0).prefix(tr("громк. ")));
             ui.add(egui::DragValue::new(&mut f.pitch).speed(0.01).range(0.1..=3.0).prefix(tr("тон ")));
-            if ui.small_button("🗑").clicked() {
+            if crate::vts_style::button(ui, "🗑").clicked() {
                 del = Some(k);
             }
         });
@@ -803,7 +803,7 @@ pub fn sound_params_ui(ui: &mut egui::Ui, salt: &str, p: &mut crate::audio::Soun
     if let Some(k) = del {
         p.files.remove(k);
     }
-    if ui.button(tr("+ Добавить звук…")).clicked() {
+    if crate::vts_style::button(ui, tr("+ Добавить звук…")).clicked() {
         let _ = std::fs::create_dir_all(dir_hint);
         if let Some(files) = rfd::FileDialog::new().set_directory(dir_hint).add_filter("Audio", &["wav", "mp3", "ogg"]).pick_files() {
             for f in files {
@@ -883,10 +883,10 @@ fn sound_dialog(app: &mut App, ctx: &Context, i: usize) {
             sc.sound_slots.pop();
         }
         ui.horizontal(|ui| {
-            if ui.button(tr("▶ Проверить")).clicked() {
+            if crate::vts_style::button(ui, tr("▶ Проверить")).clicked() {
                 test = true;
             }
-            if ui.button(tr("Открыть папку модели")).clicked() {
+            if crate::vts_style::button(ui, tr("Открыть папку модели")).clicked() {
                 let _ = std::process::Command::new("explorer").arg(&dir).spawn();
             }
         });
@@ -918,16 +918,16 @@ pub fn model_sound_for(app: &mut App, ui: &mut egui::Ui, title: &str, key: Strin
         let ms = app.settings.model_sound.entry(key.clone()).or_default();
         ui.horizontal(|ui| {
             ui.label(tr("Громкость модели"));
-            ui.add(egui::Slider::new(&mut ms.volume, 0.0..=100.0).suffix("%"));
-            ui.checkbox(&mut ms.muted, tr("Без звука"));
+            crate::vts_style::slider_ex(ui, &mut ms.volume, 0.0..=100.0, "0%", "100%", "", "%");
+            crate::ui::toggle(ui, &mut ms.muted, tr("Без звука"));
         });
         ui.horizontal(|ui| {
-            ui.checkbox(&mut ms.volume_by_size, tr("Громкость по размеру"));
+            crate::ui::toggle(ui, &mut ms.volume_by_size, tr("Громкость по размеру"));
             ui.add_enabled(ms.volume_by_size, egui::DragValue::new(&mut ms.size_range[0]).speed(1.0).prefix("min "));
             ui.add_enabled(ms.volume_by_size, egui::DragValue::new(&mut ms.size_range[1]).speed(1.0).prefix("max "));
         });
         ui.horizontal(|ui| {
-            ui.checkbox(&mut ms.pan_by_x, tr("Панорама по X"));
+            crate::ui::toggle(ui, &mut ms.pan_by_x, tr("Панорама по X"));
             ui.add_enabled(ms.pan_by_x, egui::DragValue::new(&mut ms.x_range[0]).speed(0.01).prefix("min "));
             ui.add_enabled(ms.pan_by_x, egui::DragValue::new(&mut ms.x_range[1]).speed(0.01).prefix("max "));
         });
@@ -937,12 +937,12 @@ pub fn model_sound_for(app: &mut App, ui: &mut egui::Ui, title: &str, key: Strin
         for (k, t) in ms.triggers.iter_mut().enumerate() {
             egui::CollapsingHeader::new(if t.name.is_empty() { format!("{} {}", tr("Триггер"), k + 1) } else { t.name.clone() }).id_salt(("trg", k)).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut t.active, tr("Активен"));
+                    crate::ui::toggle(ui, &mut t.active, tr("Активен"));
                     ui.add(egui::TextEdit::singleline(&mut t.name).hint_text(tr("Название")).desired_width(160.0));
-                    if ui.small_button("▶").clicked() {
+                    if crate::vts_style::button(ui, "▶").clicked() {
                         test = Some(k);
                     }
-                    if ui.small_button("🗑").clicked() {
+                    if crate::vts_style::button(ui, "🗑").clicked() {
                         del = Some(k);
                     }
                 });
@@ -978,16 +978,16 @@ pub fn model_sound_for(app: &mut App, ui: &mut egui::Ui, title: &str, key: Strin
                     ui.add(egui::DragValue::new(&mut t.condition_range[1]).speed(0.01));
                 });
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut t.speed_to_volume, tr("Скорость → громкость"));
+                    crate::ui::toggle(ui, &mut t.speed_to_volume, tr("Скорость → громкость"));
                     ui.add(egui::DragValue::new(&mut t.speed_to_volume_range[0]).speed(0.01));
                     ui.add(egui::DragValue::new(&mut t.speed_to_volume_range[1]).speed(0.01));
-                    ui.checkbox(&mut t.speed_to_pitch, tr("Скорость → тон"));
+                    crate::ui::toggle(ui, &mut t.speed_to_pitch, tr("Скорость → тон"));
                     ui.add(egui::DragValue::new(&mut t.speed_to_pitch_range[0]).speed(0.01));
                     ui.add(egui::DragValue::new(&mut t.speed_to_pitch_range[1]).speed(0.01));
                 });
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut t.item_load_sound, tr("Звук загрузки предмета"));
-                    ui.checkbox(&mut t.item_delete_sound, tr("Звук удаления предмета"));
+                    crate::ui::toggle(ui, &mut t.item_load_sound, tr("Звук загрузки предмета"));
+                    crate::ui::toggle(ui, &mut t.item_delete_sound, tr("Звук удаления предмета"));
                 });
                 sound_params_ui(ui, &format!("trg{k}"), &mut t.sound, &dir);
             });
@@ -995,7 +995,7 @@ pub fn model_sound_for(app: &mut App, ui: &mut egui::Ui, title: &str, key: Strin
         if let Some(k) = del {
             ms.triggers.remove(k);
         }
-        if ui.button(tr("+ Добавить триггер")).clicked() {
+        if crate::vts_style::button(ui, tr("+ Добавить триггер")).clicked() {
             ms.triggers.push(crate::sfx::SoundTrigger { parameter: params.first().cloned().unwrap_or_default(), ..Default::default() });
         }
     });
@@ -1011,10 +1011,8 @@ pub fn model_sound_for(app: &mut App, ui: &mut egui::Ui, title: &str, key: Strin
 }
 
 fn slider(ui: &mut egui::Ui, v: &mut f32, r: std::ops::RangeInclusive<f32>, label: &str) {
-    ui.horizontal(|ui| {
-        ui.add_sized([250.0, 22.0], egui::Label::new(RichText::new(tr(label)).size(15.0)));
-        ui.add(egui::Slider::new(v, r));
-    });
+    ui.label(RichText::new(tr(label)).size(17.0));
+    crate::vts_style::slider(ui, v, r);
 }
 
 fn feature_dialog(app: &mut App, ctx: &Context, id: &str, title: &str, dropper: bool, body: impl FnOnce(&mut App, &mut egui::Ui)) {
@@ -1280,7 +1278,7 @@ pub fn api_card(app: &mut App, ui: &mut egui::Ui) {
             if ui.add(egui::DragValue::new(&mut port).range(1024.0..=65535.0)).changed() {
                 app.settings.api_port = port as u16;
             }
-            if app.settings.api_on && app.api.as_ref().map(|s| s.port != app.settings.api_port).unwrap_or(false) && ui.button(tr("Применить")).clicked() {
+            if app.settings.api_on && app.api.as_ref().map(|s| s.port != app.settings.api_port).unwrap_or(false) && crate::vts_style::button(ui, tr("Применить")).clicked() {
                 app.actions.push(Action::SetApi(true));
             }
         });
@@ -1315,7 +1313,7 @@ pub fn api_card(app: &mut App, ui: &mut egui::Ui) {
             for (k, t) in app.settings.api_tokens.iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.label(format!("{} — {}", t.plugin, t.developer));
-                    if ui.small_button(tr("Отозвать")).clicked() {
+                    if crate::vts_style::button(ui, tr("Отозвать")).clicked() {
                         revoke = Some(k);
                     }
                 });
@@ -1357,7 +1355,7 @@ pub fn mesh_select(app: &mut App, ctx: &Context) {
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.add(egui::Label::new(RichText::new(&sel.text).size(16.0)).wrap());
-                if ui.button("?").clicked() {
+                if crate::vts_style::button(ui, "?").clicked() {
                     sel.show_help = !sel.show_help;
                 }
             });
@@ -1366,7 +1364,7 @@ pub fn mesh_select(app: &mut App, ctx: &Context) {
             }
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut sel.filter).hint_text(tr("Фильтр")).desired_width(220.0));
-                if sel.at_click.is_some() && ui.button(tr("Сбросить фильтр по клику")).clicked() {
+                if sel.at_click.is_some() && crate::vts_style::button(ui, tr("Сбросить фильтр по клику")).clicked() {
                     sel.at_click = None;
                 }
             });
@@ -1382,7 +1380,7 @@ pub fn mesh_select(app: &mut App, ctx: &Context) {
                         }
                     }
                     let mut on = sel.active.contains(id);
-                    let r = ui.checkbox(&mut on, id);
+                    let r = crate::ui::toggle(ui, &mut on, id);
                     if r.hovered() {
                         hover = Some(id.clone());
                     }
@@ -1399,10 +1397,10 @@ pub fn mesh_select(app: &mut App, ctx: &Context) {
             let ok = if sel.count > 0 { n == sel.count } else { n >= 1 };
             ui.label(if sel.count > 0 { format!("{} {n} / {}", tr("Выбрано:"), sel.count) } else { format!("{} {n}", tr("Выбрано:")) });
             ui.horizontal(|ui| {
-                if ui.add_enabled(ok, egui::Button::new("OK")).clicked() {
+                if ui.add_enabled(ok, egui::Button::new(RichText::new("OK").color(Color32::WHITE)).fill(crate::vts_style::BLUE).rounding(3.0)).clicked() {
                     done = Some(true);
                 }
-                if ui.button(tr("Отмена")).clicked() {
+                if crate::vts_style::button(ui, tr("Отмена")).clicked() {
                     done = Some(false);
                 }
             });
@@ -1453,16 +1451,14 @@ pub fn mic_card(app: &mut App, ui: &mut egui::Ui) {
                     app.set_mic(true);
                 }
             }
-            if ui.button(tr("Перезагрузить")).clicked() {
+            if crate::vts_style::button(ui, tr("Перезагрузить")).clicked() {
                 app.set_mic(true);
             }
         });
         let m = &mut app.settings.mic;
         let row = |ui: &mut egui::Ui, label: &str, v: &mut f32| {
-            ui.horizontal(|ui| {
-                ui.add_sized([200.0, 20.0], egui::Label::new(tr(label)));
-                ui.add(egui::Slider::new(v, 0.0..=1.0));
-            });
+            ui.label(RichText::new(tr(label)).size(17.0));
+            crate::vts_style::slider_ex(ui, v, 0.0..=1.0, "Min", "Max", "", "");
         };
         row(ui, "Усиление громкости", &mut m.gain);
         row(ui, "Порог громкости", &mut m.cutoff);
@@ -1498,13 +1494,13 @@ pub fn mic_card(app: &mut App, ui: &mut egui::Ui) {
                     Some((c, p)) if c == k => format!("{k} {:.0}%", p * 100.0),
                     _ => format!("{}{k}", if done { "✔ " } else { "" }),
                 };
-                if ui.add_enabled(app.mic.is_some(), egui::Button::new(label)).clicked() {
+                if ui.add_enabled(app.mic.is_some(), egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(crate::vts_style::BLUE).rounding(3.0)).clicked() {
                     if let Some(mic) = &app.mic {
                         mic.calibrate(k);
                     }
                 }
             }
-            if ui.button(tr("Сбросить калибровку")).clicked() {
+            if crate::vts_style::button(ui, tr("Сбросить калибровку")).clicked() {
                 app.settings.mic.profiles.clear();
             }
         });
@@ -1541,7 +1537,7 @@ pub fn editor_card(app: &mut App, ui: &mut egui::Ui) {
             if ui.add(egui::DragValue::new(&mut p).range(1.0..=65535.0)).changed() {
                 app.settings.editor_port = p as u16;
             }
-            if app.settings.editor_on && ui.button(tr("Переподключиться")).clicked() {
+            if app.settings.editor_on && crate::vts_style::button(ui, tr("Переподключиться")).clicked() {
                 app.set_editor(true);
             }
         });
@@ -1615,18 +1611,18 @@ pub fn twitch_card(app: &mut App, ui: &mut egui::Ui) {
             ui.horizontal(|ui| {
                 ui.label("Client ID");
                 ui.add(egui::TextEdit::singleline(&mut app.settings.twitch.client_id).desired_width(260.0));
-                if ui.small_button("dev.twitch.tv").clicked() {
+                if crate::vts_style::button(ui, "dev.twitch.tv").clicked() {
                     app.actions.push(Action::OpenUrl("https://dev.twitch.tv/console/apps/create".into()));
                 }
             });
             ui.horizontal(|ui| {
                 if app.settings.twitch.login.is_empty() {
-                    if ui.button(tr("Войти через Twitch")).clicked() {
+                    if crate::vts_style::button(ui, tr("Войти через Twitch")).clicked() {
                         app.twitch_login();
                     }
                 } else {
                     ui.label(format!("{} {}", tr("Вход выполнен:"), app.settings.twitch.login));
-                    if ui.button(tr("Выйти")).clicked() {
+                    if crate::vts_style::button(ui, tr("Выйти")).clicked() {
                         let t = &mut app.settings.twitch;
                         t.access_token.clear();
                         t.refresh_token.clear();
@@ -1671,7 +1667,7 @@ pub fn reset_notice(app: &mut App, ctx: &Context) {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(format!("{} «{name}» {} {:.0} {}", tr("Возврат к модели"), tr("через"), left, tr("с")));
-                    if ui.button("✖").on_hover_text(tr("Отменить")).clicked() {
+                    if crate::vts_style::button(ui, "✖").on_hover_text(tr("Отменить")).clicked() {
                         cancel = Some(id.clone());
                     }
                 });

@@ -41,7 +41,7 @@ pub fn tracker_extra(app: &mut App, ui: &mut egui::Ui, running: bool) {
                     .size(13.0)
                     .color(Color32::GRAY),
             );
-            if !app.settings.nv_cal.is_empty() && ui.add_enabled(!running, egui::Button::new(tr("Сбросить калибровку NVIDIA"))).clicked() {
+            if !app.settings.nv_cal.is_empty() && ui.add_enabled(!running, egui::Button::new(RichText::new(tr("Сбросить калибровку NVIDIA")).color(Color32::WHITE)).fill(crate::vts_style::BLUE).rounding(3.0)).clicked() {
                 app.settings.nv_cal.clear();
                 app.save();
             }
@@ -623,7 +623,7 @@ fn guest_list(app: &mut App, ui: &mut egui::Ui) {
                 ui.label(tr("Отправьте гостям ваш адрес и пароль:"));
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(&addr).size(18.0).strong());
-                    if ui.button(tr("Копировать")).clicked() {
+                    if crate::vts_style::button(ui, tr("Копировать")).clicked() {
                         ui.ctx().copy_text(addr.clone());
                     }
                 });
@@ -699,12 +699,12 @@ fn control_screen(app: &mut App, ctx: &egui::Context) {
         let mut quit = false;
         card(ui, |ui| {
             let label = tr("Выйти из коллаба").to_string();
-            if ui.add_sized([W - 24.0, 36.0], egui::Button::new(RichText::new(label).size(18.0).strong().color(Color32::WHITE)).fill(PINK).rounding(6.0)).clicked() {
+            if ui.add_sized([W - 24.0, 36.0], egui::Button::new(RichText::new(label).size(18.0).strong().color(Color32::WHITE)).fill(PINK).rounding(3.0)).clicked() {
                 quit = true;
             }
             ui.horizontal(|ui| {
                 let oid = egui::Id::new("vnet-ordering");
-                if ui.add(egui::Button::new(RichText::new(tr("Порядок")).size(16.0).color(Color32::WHITE)).fill(VBLUE).rounding(6.0).min_size(Vec2::new(150.0, 28.0))).clicked() {
+                if ui.add(egui::Button::new(RichText::new(tr("Порядок")).size(16.0).color(Color32::WHITE)).fill(VBLUE).rounding(3.0).min_size(Vec2::new(150.0, 28.0))).clicked() {
                     let v = ui.ctx().data(|d| d.get_temp::<bool>(oid).unwrap_or(false));
                     ui.ctx().data_mut(|d| d.insert_temp(oid, !v));
                 }
@@ -759,9 +759,9 @@ fn control_screen(app: &mut App, ctx: &egui::Context) {
                 ui.indent(("vnet-peer", p.id), |ui| {
                     vts_toggle(ui, &mut p.local_control, "Позицию задаю я");
                     if p.local_control {
-                        ui.add(egui::Slider::new(&mut p.offset[0], -1.0..=1.0).text("X"));
-                        ui.add(egui::Slider::new(&mut p.offset[1], -0.7..=0.7).text("Y"));
-                        ui.add(egui::Slider::new(&mut p.offset[2], 0.2..=3.0).text(tr("Размер")));
+                        crate::vts_style::slider_ex(ui, &mut p.offset[0], -1.0..=1.0, "", "", "X", "");
+                        crate::vts_style::slider_ex(ui, &mut p.offset[1], -0.7..=0.7, "", "", "Y", "");
+                        crate::vts_style::slider_ex(ui, &mut p.offset[2], 0.2..=3.0, "", "", "Размер", "");
                     }
                     vts_toggle(ui, &mut p.show_model, "Показывать модель");
                     vts_toggle(ui, &mut p.show_items, "Показывать предметы");
@@ -871,49 +871,87 @@ fn phone_status(app: &App, ui: &mut egui::Ui) {
     }
 }
 
-/// "Wi-Fi connection settings": phone tracking over the network (VTS phone app with
-/// "3rd Party PC Clients" enabled).
+fn input(ui: &mut egui::Ui, text: &mut String, hint: &str, enabled: bool) {
+    ui.add_enabled(enabled, egui::TextEdit::singleline(text).hint_text(hint).font(egui::FontId::proportional(17.0)).desired_width(ui.available_width() - 10.0));
+}
+
+fn port_field(ui: &mut egui::Ui, v: &mut u16, enabled: bool) -> egui::Response {
+    ui.add_enabled(enabled, egui::DragValue::new(v).range(1..=65535).speed(0.0))
+}
+
+fn phone_status_vts(app: &App, ui: &mut egui::Ui) {
+    let (col, text) = if phone_running(app) {
+        let rate = app.tracker.as_ref().map(|t| t.rate).unwrap_or(0.0);
+        if rate > 0.5 {
+            (Color32::from_rgb(110, 210, 110), format!("{} {}\n{}: {rate:.0} FPS", tr("Подключено к"), app.settings.phone_ip, tr("Частота данных")))
+        } else {
+            (Color32::from_rgb(240, 220, 60), tr("Подключение…").to_string())
+        }
+    } else {
+        (Color32::GRAY, tr("Отключено").to_string())
+    };
+    crate::vts_style::status(ui, col, &text);
+    if let (true, Some(e)) = (phone_running(app), &app.tracker_error) {
+        crate::vts_style::note(ui, e);
+    }
+}
+
+fn ip_list(ui: &mut egui::Ui, key: &str) {
+    let id = egui::Id::new(("show-ip-list", key));
+    let mut show = ui.ctx().data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+    if crate::vts_style::wide(ui, tr("Показать список IP"), crate::vts_style::BLUE, 200.0, 28.0).clicked() {
+        show = !show;
+        ui.ctx().data_mut(|d| d.insert_temp(id, show));
+    }
+    if show {
+        ui.label(RichText::new(crate::tracking::local_ips().join("\n")).size(16.0).strong());
+    }
+}
+
+/// "Wi-Fi connection settings" (VTS: "Stream to PC (WiFi)"): the VTS phone app with
+/// "3rd Party PC Clients" enabled.
 pub fn wifi_card(app: &mut App, ui: &mut egui::Ui) {
     section(ui, tr("Настройки Wi-Fi-соединения"), |ui| {
-        let mut on = phone_running(app);
-        if toggle(ui, &mut on, tr("Подключить телефон по Wi-Fi")).changed() {
-            if on {
-                let ip = app.settings.phone_ip.clone();
-                if ip.trim().is_empty() {
-                    scan(app, false);
+        let running = phone_running(app);
+        let mut on = running;
+        ui.horizontal(|ui| {
+            crate::vts_style::help(ui, "Трекинг с телефона: приложение VTube Studio на iPhone/Android, в его настройках включите «3rd Party PC Clients». Телефон и ПК должны быть в одной сети.");
+            if toggle(ui, &mut on, tr("Подключить телефон")).changed() {
+                if on {
+                    let ip = app.settings.phone_ip.clone();
+                    if ip.trim().is_empty() {
+                        scan(app, false);
+                    } else {
+                        start_phone(app, ip);
+                    }
                 } else {
-                    start_phone(app, ip);
+                    app.actions.push(Action::StopTracker);
                 }
-            } else {
-                app.actions.push(Action::StopTracker);
             }
-        }
-        ui.horizontal(|ui| {
-            ui.label(tr("IP телефона"));
-            ui.add_enabled(!phone_running(app), egui::TextEdit::singleline(&mut app.settings.phone_ip).hint_text("192.168.1.23").desired_width(150.0));
-            ui.label(tr("порт"));
-            ui.add_enabled(!phone_running(app), egui::DragValue::new(&mut app.settings.phone_port).range(1..=65535));
         });
-        ui.horizontal(|ui| {
+        ui.add_space(4.0);
+        crate::vts_style::field_row(ui, "IP", |ui| input(ui, &mut app.settings.phone_ip, "192.168.1.23", !running));
+        crate::vts_style::field_row(ui, "Порт", |ui| {
+            port_field(ui, &mut app.settings.phone_port, !running);
+        });
+        ui.add_space(4.0);
+        ui.columns(2, |c| {
+            phone_status_vts(app, &mut c[0]);
             let busy = app.phone_scan.is_some();
-            if ui.add_enabled(!busy && !phone_running(app), egui::Button::new(if busy { tr("Поиск…") } else { tr("Найти телефон") })).clicked() {
-                scan(app, false);
-            }
-            let id = egui::Id::new("show-ip-list");
-            let mut show = ui.ctx().data(|d| d.get_temp::<bool>(id).unwrap_or(false));
-            if ui.button(tr("Показать список IP")).clicked() {
-                show = !show;
-                ui.ctx().data_mut(|d| d.insert_temp(id, show));
-            }
-            if show {
-                ui.label(RichText::new(crate::tracking::local_ips().join(", ")).strong());
-            }
+            c[1].add_enabled_ui(!busy && !running, |ui| {
+                if crate::vts_style::wide(ui, if busy { tr("Поиск…") } else { tr("Найти телефон") }, crate::vts_style::BLUE, 0.0, 32.0).clicked() {
+                    scan(app, false);
+                }
+            });
+            c[1].add_space(6.0);
+            ip_list(&mut c[1], "wifi");
         });
         let mut pick = None;
         for (ip, usb) in &app.phone_found {
             ui.horizontal(|ui| {
-                ui.label(format!("📱 {ip}{}", if *usb { " (USB)" } else { "" }));
-                if ui.small_button(tr("Подключить")).clicked() {
+                ui.add_space(14.0);
+                ui.label(RichText::new(format!("📱 {ip}{}", if *usb { "  (USB)" } else { "" })).size(16.0));
+                if crate::vts_style::button(ui, tr("Подключить")).clicked() {
                     pick = Some(ip.to_string());
                 }
             });
@@ -921,80 +959,81 @@ pub fn wifi_card(app: &mut App, ui: &mut egui::Ui) {
         if let Some(ip) = pick {
             start_phone(app, ip);
         }
-        phone_status(app, ui);
-        ui.label(
-            RichText::new(tr(
-                "В приложении VTube Studio на телефоне включите «3rd Party PC Clients» — телефон и ПК должны быть в одной сети. Если Windows спросит про брандмауэр, разрешите доступ для частных сетей. Одновременно с нами телефон может отдавать данные в VBridger.",
-            ))
-            .size(13.0)
-            .color(Color32::GRAY),
-        );
+        crate::vts_style::note(ui, "Если Windows спросит про брандмауэр, разрешите доступ для частных сетей. Телефон может одновременно отдавать данные и в VBridger.");
     });
 }
 
-/// "USB connection settings": the same protocol over a USB tethering link.
+/// "USB settings": the same protocol over a USB tethering link.
 pub fn usb_card(app: &mut App, ui: &mut egui::Ui) {
     section(ui, tr("Настройки USB-соединения"), |ui| {
         let usb_ip = crate::tracking::USB_TETHER_PHONES.contains(&app.settings.phone_ip.as_str());
         let mut on = phone_running(app) && usb_ip;
         let busy = app.phone_scan.as_ref().map(|s| s.0).unwrap_or(false);
-        if toggle(ui, &mut on, tr("Подключиться через USB")).changed() {
-            if on {
-                scan(app, true);
-            } else {
-                app.actions.push(Action::StopTracker);
+        ui.horizontal(|ui| {
+            crate::vts_style::help(ui, "Через USB-модем: iPhone — «Режим модема» + кабель (нужны iTunes или Apple Devices), Android — «USB-модем». Собственный USB-протокол VTS закрыт, поэтому данные идут по сети поверх кабеля.");
+            if toggle(ui, &mut on, tr("Подключиться через USB")).changed() {
+                if on {
+                    scan(app, true);
+                } else {
+                    app.actions.push(Action::StopTracker);
+                }
             }
-        }
+        });
+        ui.add_space(4.0);
         if busy {
-            status_line(ui, Color32::from_rgb(240, 170, 60), tr("Поиск телефона на USB…"));
+            crate::vts_style::status(ui, Color32::from_rgb(240, 220, 60), tr("Поиск телефона на USB…"));
         } else if on {
-            phone_status(app, ui);
+            phone_status_vts(app, ui);
         } else {
-            status_line(ui, Color32::GRAY, tr("Отключено"));
+            crate::vts_style::status(ui, Color32::GRAY, tr("USB выключен."));
         }
-        ui.label(
-            RichText::new(tr(
-                "Работает через USB-модем: iPhone — включите «Режим модема» и подключите кабель (нужны iTunes или Apple Devices); Android — включите «USB-модем». В приложении VTube Studio включите «3rd Party PC Clients». Собственный USB-протокол VTS закрыт, поэтому используется сетевое подключение поверх кабеля.",
-            ))
-            .size(13.0)
-            .color(Color32::GRAY),
-        );
     });
 }
 
 pub fn mocopi_card(app: &mut App, ui: &mut egui::Ui) {
-    section(ui, "mocopi", |ui| {
-        if toggle(ui, &mut app.settings.mocopi, tr("Запустить")).changed() {
-            app.mocopi_error = None;
-            app.save();
-        }
-        toggle(ui, &mut app.settings.mocopi_show_params, tr("Показывать параметры трекинга"));
+    section(ui, tr("Настройки mocopi"), |ui| {
         ui.horizontal(|ui| {
-            ui.label(tr("IP для приложения mocopi:"));
-            ui.label(RichText::new(crate::tracking::local_ips().first().cloned().unwrap_or_else(|| "?".into())).strong());
-            ui.label(tr("порт"));
-            let r = ui.add_enabled(app.mocopi.is_none(), egui::DragValue::new(&mut app.settings.mocopi_port).range(1024..=65535));
-            if r.changed() {
+            crate::vts_style::help(ui, "В приложении mocopi (телефон или ПК) откройте «3rd party connection», укажите IP и порт отсюда и нажмите «Start sending data». Принимается один трекер одновременно.");
+            if toggle(ui, &mut app.settings.mocopi, tr("Подключить")).changed() {
+                app.mocopi_error = None;
                 app.save();
             }
         });
+        crate::vts_style::field_row(ui, "IP-адрес", |ui| ip_list(ui, "mocopi"));
+        crate::vts_style::field_row(ui, "Порт", |ui| {
+            if port_field(ui, &mut app.settings.mocopi_port, app.mocopi.is_none()).changed() {
+                app.save();
+            }
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            crate::vts_style::help(ui, "Показывать параметры Mocopi* в списке входов при настройке модели. Без данных MocopiAngleX/Y/Z берутся из трекинга лица.");
+            toggle(ui, &mut app.settings.mocopi_show_params, tr("Показывать параметры трекинга"));
+        });
         let (col, text) = match (&app.mocopi, &app.mocopi_error) {
             (_, Some(e)) => (Color32::from_rgb(220, 80, 80), e.clone()),
-            (Some(r), None) if r.connected() => (Color32::from_rgb(90, 200, 110), format!("{} {} ({:.0} FPS)", tr("Данные получены от"), r.sender().map(|s| s.ip().to_string()).unwrap_or_default(), r.rate)),
-            (Some(r), None) => (Color32::from_rgb(240, 170, 60), format!("{} {}", tr("Ожидание данных на порту"), r.port)),
+            (Some(r), None) if r.connected() => (Color32::from_rgb(110, 210, 110), format!("{}\n{}: {:.0} FPS", tr("Подключено."), tr("Частота кадров движения"), r.rate)),
+            (Some(r), None) => (Color32::from_rgb(240, 220, 60), format!("{} {}…", tr("Ожидание данных на порту"), r.port)),
             (None, None) => (Color32::GRAY, tr("Отключено").to_string()),
         };
-        status_line(ui, col, &text);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            let (r, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+            ui.painter().circle_filled(r.center(), 7.0, col);
+            ui.label(RichText::new(tr("Состояние подключения")).size(20.0));
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(34.0);
+            ui.label(RichText::new(text).size(16.0));
+        });
         if let Some(r) = app.mocopi.as_mut() {
-            if ui.button(tr("Центрировать позицию тела")).clicked() {
-                r.recenter();
-            }
+            ui.horizontal(|ui| {
+                ui.add_space(34.0);
+                if crate::vts_style::button(ui, tr("Центрировать позицию тела")).clicked() {
+                    r.recenter();
+                }
+            });
         }
-        ui.label(
-            RichText::new(tr("В приложении mocopi (телефон или ПК) откройте «3rd party connection», укажите этот IP и порт и нажмите «Start sending data». Принимается один трекер одновременно. Без данных MocopiAngleX/Y/Z берутся из трекинга лица."))
-                .size(13.0)
-                .color(Color32::GRAY),
-        );
         if app.settings.mocopi_show_params {
             egui::CollapsingHeader::new(tr("Параметры mocopi")).show(ui, |ui| {
                 for (n, v) in crate::mocopi::snapshot() {
@@ -1012,26 +1051,31 @@ pub fn discord_card(app: &mut App, ui: &mut egui::Ui) {
     section(ui, "Discord", |ui| {
         let can = !app.settings.discord_app_id.trim().is_empty();
         let mut on = app.settings.discord;
-        if ui.add_enabled_ui(can || on, |ui| toggle(ui, &mut on, tr("Войти и активировать"))).inner.changed() {
-            app.settings.discord = on;
-            app.save();
-        }
-        toggle(ui, &mut app.settings.discord_show_model, tr("Показывать название модели"));
         ui.horizontal(|ui| {
-            ui.label("Application ID");
-            ui.add_enabled(!app.settings.discord, egui::TextEdit::singleline(&mut app.settings.discord_app_id).hint_text("123456789012345678").desired_width(190.0));
+            crate::vts_style::help(ui, "Статус в профиле Discord (модель, коллаб, время). Нужен Application ID: создайте приложение на discord.com/developers/applications — его имя Discord покажет как активность.");
+            if ui.add_enabled_ui(can || on, |ui| toggle(ui, &mut on, tr("Войти и активировать"))).inner.changed() {
+                app.settings.discord = on;
+                app.save();
+            }
         });
+        ui.horizontal(|ui| {
+            ui.add_space(30.0);
+            toggle(ui, &mut app.settings.discord_show_model, tr("Показывать название модели"));
+        });
+        crate::vts_style::field_row(ui, "Application ID", |ui| input(ui, &mut app.settings.discord_app_id, "123456789012345678", !app.settings.discord));
         let (col, text) = match &app.discord {
-            Some(p) if p.last_status == "connected" => (Color32::from_rgb(90, 200, 110), tr("Статус показывается в Discord").to_string()),
-            Some(p) => (Color32::from_rgb(240, 170, 60), p.last_status.clone()),
+            Some(p) if p.last_status == "connected" => (Color32::from_rgb(110, 210, 110), tr("Подключено").to_string()),
+            Some(p) => (Color32::from_rgb(240, 220, 60), p.last_status.clone()),
             None => (Color32::GRAY, tr("Отключено").to_string()),
         };
-        status_line(ui, col, &text);
-        ui.label(
-            RichText::new(tr("Показывает в профиле Discord, что вы в rigrs (модель, коллаб, время). Нужен Application ID: создайте приложение на discord.com/developers/applications — его имя Discord покажет как активность. Discord должен быть запущен на этом ПК."))
-                .size(13.0)
-                .color(Color32::GRAY),
-        );
+        ui.add_space(4.0);
+        ui.label(RichText::new(tr("Состояние подключения")).size(20.0));
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            let (r, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+            ui.painter().circle_filled(r.center(), 7.0, col);
+            ui.label(RichText::new(text).size(16.0));
+        });
     });
 }
 

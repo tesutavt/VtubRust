@@ -10,7 +10,7 @@ use crate::i18n::tr;
 use crate::ui::{section, toggle, TEXT};
 use crate::ui_hotkeys::{dim, group_title, pink_row};
 
-const BLUE_BTN: Color32 = Color32::from_rgb(14, 150, 240);
+const BLUE_BTN: Color32 = crate::vts_style::BLUE;
 const RED_BTN: Color32 = Color32::from_rgb(222, 88, 116);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -72,8 +72,7 @@ fn db_meter(ui: &mut egui::Ui, level: f32) {
 fn vol_slider(ui: &mut egui::Ui, v: &mut f32) {
     ui.horizontal(|ui| {
         ui.label(RichText::new("🔊").size(18.0));
-        ui.spacing_mut().slider_width = ui.available_width() - 70.0;
-        ui.add(egui::Slider::new(v, 0.0..=100.0).suffix("%").show_value(true));
+        crate::vts_style::slider_ex(ui, v, 0.0..=100.0, "0%", "100%", "", "%");
     });
 }
 
@@ -220,7 +219,7 @@ pub fn dialogs(app: &mut App, ctx: &Context) {
                     if ui.add(egui::DragValue::new(&mut p).range(1.0..=65535.0)).changed() {
                         s.vban_port = p as u16;
                     }
-                    if ui.small_button("↺").clicked() {
+                    if crate::vts_style::button(ui, "↺").clicked() {
                         s.vban_port = 6980;
                     }
                 });
@@ -459,12 +458,12 @@ fn mesh_list(app: &mut App, ctx: &Context, kind: u8) {
                     }
                 });
                 ui.add(egui::TextEdit::singleline(&mut st.group_name).hint_text(tr("Новая группа")).desired_width(160.0));
-                if ui.button(tr("Создать")).clicked() && !st.group_name.trim().is_empty() {
+                if crate::vts_style::button(ui, tr("Создать")).clicked() && !st.group_name.trim().is_empty() {
                     d.model_art_mesh_groups.push(MeshGroup { name: st.group_name.trim().into(), ..Default::default() });
                     st.group = d.model_art_mesh_groups.len() - 1;
                     st.group_name.clear();
                 }
-                if !d.model_art_mesh_groups.is_empty() && ui.button(tr("Удалить группу")).clicked() {
+                if !d.model_art_mesh_groups.is_empty() && crate::vts_style::button(ui, tr("Удалить группу")).clicked() {
                     d.model_art_mesh_groups.remove(st.group.min(d.model_art_mesh_groups.len() - 1));
                     st.group = 0;
                 }
@@ -475,10 +474,10 @@ fn mesh_list(app: &mut App, ctx: &Context, kind: u8) {
             // Bulk switches for the meshes matching the filter.
             let mut set_all = None;
             ui.horizontal(|ui| {
-                if ui.button(tr("Включить все")).clicked() {
+                if crate::vts_style::button(ui, tr("Включить все")).clicked() {
                     set_all = Some(true);
                 }
-                if ui.button(tr("Выключить все")).clicked() {
+                if crate::vts_style::button(ui, tr("Выключить все")).clicked() {
                     set_all = Some(false);
                 }
             });
@@ -524,7 +523,7 @@ fn mesh_list(app: &mut App, ctx: &Context, kind: u8) {
                     2 => {
                         ui.add_sized([280.0, 24.0], egui::Label::new(RichText::new(id).size(16.0)));
                         let mut v = d.light_mult(id);
-                        if ui.add(egui::Slider::new(&mut v, 0.0..=2.0)).changed() {
+                        if crate::vts_style::slider(ui, &mut v, 0.0..=2.0).changed() {
                             d.set_light(id, v);
                         }
                     }
@@ -593,7 +592,7 @@ pub fn model_volume(sounds: &mut std::collections::HashMap<String, crate::sfx::M
         let ms = sounds.entry(key.to_string()).or_default();
         ui.horizontal(|ui| {
             ui.spacing_mut().slider_width = ui.available_width() - 120.0;
-            ui.add(egui::Slider::new(&mut ms.volume, 0.0..=100.0));
+            crate::vts_style::slider_ex(ui, &mut ms.volume, 0.0..=100.0, "0%", "100%", "", "%");
             let mut on = !ms.muted;
             if ui.add(egui::Button::new(RichText::new(if on { "🔊" } else { "🔇" }).size(20.0))).on_hover_text(tr("Вкл./выкл. звук модели")).clicked() {
                 on = !on;
@@ -601,8 +600,8 @@ pub fn model_volume(sounds: &mut std::collections::HashMap<String, crate::sfx::M
             }
         });
         ui.horizontal(|ui| {
-            ui.checkbox(&mut ms.volume_by_size, tr("Громкость по размеру"));
-            ui.checkbox(&mut ms.pan_by_x, tr("Панорама по X"));
+            crate::ui::toggle(ui, &mut ms.volume_by_size, tr("Громкость по размеру"));
+            crate::ui::toggle(ui, &mut ms.pan_by_x, tr("Панорама по X"));
         });
     });
 }
@@ -668,7 +667,7 @@ fn controller_widget(app: &mut App, ctx: &Context) {
                 })
                 .response
                 .on_hover_text(tr("Ручная настройка нужна только для нестандартных геймпадов (DirectInput) — пока не поддерживается"));
-                if ui.button("↺").on_hover_text(tr("Сбросить ориентацию гироскопа")).clicked() {
+                if crate::vts_style::button(ui, "↺").on_hover_text(tr("Сбросить ориентацию гироскопа")).clicked() {
                     app.pads.reset_orientation();
                 }
             });
@@ -799,7 +798,7 @@ pub fn update_card(app: &mut App, ui: &mut egui::Ui) {
         if toggle(ui, &mut app.settings.update_check, tr("Проверять обновления при запуске")).changed() {
             app.save();
         }
-        if !app.updater.busy() && ui.button(tr("Проверить сейчас")).clicked() {
+        if !app.updater.busy() && crate::vts_style::button(ui, tr("Проверить сейчас")).clicked() {
             app.updater.check();
         }
         update_status(app, ui, true);

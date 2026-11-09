@@ -44,7 +44,7 @@ pub fn copy_card(app: &mut App, ui: &mut egui::Ui) {
         }
         toggle(ui, &mut st.rename, tr("Переименовать недостающие параметры"));
         ui.label(RichText::new(tr("Настройки и файлы копируются в текущую модель. Анимации и выражения работают, только если параметры моделей совпадают.")).size(13.0).weak());
-        go = ui.add_enabled(st.copy_from.is_some() && st.copy.iter().any(|b| *b), egui::Button::new(tr("Копировать"))).clicked();
+        go = ui.add_enabled(st.copy_from.is_some() && st.copy.iter().any(|b| *b), egui::Button::new(RichText::new(tr("Копировать")).color(egui::Color32::WHITE)).fill(crate::vts_style::BLUE).rounding(3.0)).clicked();
     });
     if !go {
         return;

@@ -681,7 +681,7 @@ fn toolbar(app: &mut App, ctx: &Context, e: f32) {
 fn filter_row(ui: &mut egui::Ui, filter: &mut String) {
     ui.horizontal(|ui| {
         ui.add(egui::TextEdit::singleline(filter).hint_text(tr("Фильтр")).desired_width(300.0));
-        if ui.button("✖").clicked() {
+        if crate::vts_style::button(ui, "✖").clicked() {
             filter.clear();
         }
     });
@@ -836,7 +836,7 @@ fn scenes_dialog(app: &mut App, ctx: &Context) {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut app.ui.scene_name).hint_text(tr("Название сцены")));
                 let name = app.ui.scene_name.trim().to_string();
-                if ui.add_enabled(!name.is_empty(), egui::Button::new(tr("Сохранить"))).clicked() {
+                if ui.add_enabled(!name.is_empty(), egui::Button::new(RichText::new(tr("Сохранить")).color(Color32::WHITE)).fill(crate::vts_style::BLUE).rounding(3.0)).clicked() {
                     app.actions.push(Action::SaveScene(name));
                     app.ui.scene_name.clear();
                 }
@@ -846,10 +846,10 @@ fn scenes_dialog(app: &mut App, ctx: &Context) {
                 ui.horizontal(|ui| {
                     ui.label(format!("{} ({} шт.)", s.name, s.items.len()));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("🗑").on_hover_text(tr("Удалить")).clicked() {
+                        if crate::vts_style::button(ui, "🗑").on_hover_text(tr("Удалить")).clicked() {
                             app.actions.push(Action::DeleteScene(s.name.clone()));
                         }
-                        if ui.button(tr("⌨ Хоткей")).on_hover_text(tr("Назначить горячую клавишу")).clicked() {
+                        if crate::vts_style::button(ui, tr("⌨ Хоткей")).on_hover_text(tr("Назначить горячую клавишу")).clicked() {
                             if let Some(list) = app.hotkeys_mut() {
                                 list.push(crate::hotkeys::Hotkey {
                                     name: format!("Сцена: {}", s.name),
@@ -866,7 +866,7 @@ fn scenes_dialog(app: &mut App, ctx: &Context) {
                                 app.toast("Сначала загрузите модель — горячие клавиши хранятся у модели");
                             }
                         }
-                        if ui.button(tr("Загрузить")).clicked() {
+                        if crate::vts_style::button(ui, tr("Загрузить")).clicked() {
                             app.actions.push(Action::LoadScene(s.name.clone()));
                         }
                     });
@@ -892,7 +892,7 @@ fn item_panel(app: &mut App, ctx: &Context) {
 
 // ---------------------------------------------------------------------- settings
 
-pub(crate) const BLUE: Color32 = Color32::from_rgb(24, 132, 236);
+pub(crate) const BLUE: Color32 = crate::vts_style::BLUE;
 pub(crate) const TEXT: Color32 = Color32::from_rgb(70, 70, 78);
 const PANEL_W: f32 = 580.0;
 const BAR_H: f32 = 64.0;
@@ -924,8 +924,8 @@ pub(crate) fn toggle(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Res
 }
 
 pub(crate) fn blue_button(ui: &mut egui::Ui, text: &str, color: Color32, height: f32) -> egui::Response {
-    let w = ui.available_width();
-    ui.add_sized([w, height], egui::Button::new(RichText::new(tr(text)).size(17.0).color(Color32::WHITE)).fill(color).rounding(9.0))
+    let color = if color == BLUE { crate::vts_style::BLUE } else { color };
+    crate::vts_style::wide(ui, tr(text), color, 0.0, height.min(40.0))
 }
 
 /// Big two-line blue button (title + subtitle).
@@ -950,8 +950,10 @@ pub(crate) fn card_frame() -> egui::Frame {
 
 /// White rounded card with a title.
 pub(crate) fn section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    let w = ui.available_width();
     card_frame().show(ui, |ui| {
-        ui.set_width(ui.available_width());
+        ui.set_width(w - 32.0);
+        ui.set_max_width(w - 32.0);
         if !title.is_empty() {
             ui.label(RichText::new(tr(title)).size(25.0).color(TEXT));
             ui.add_space(6.0);
@@ -1060,6 +1062,7 @@ fn settings_panel(app: &mut App, ctx: &Context, e: f32) {
         sa.show(ui, |ui| {
             ui.set_width(PANEL_W - 16.0);
             ui.style_mut().visuals.override_text_color = Some(TEXT);
+            crate::vts_style::apply(ui.style_mut());
             match app.ui.tab {
                 Tab::General => general_tab(app, ui),
                 Tab::Camera => camera_tab(app, ui),
@@ -1085,8 +1088,8 @@ fn path_row(ui: &mut egui::Ui, label: &str, value: &mut String, pick: impl FnOnc
     let mut changed = false;
     ui.label(label);
     ui.horizontal(|ui| {
-        changed |= ui.add(egui::TextEdit::singleline(value).desired_width(ui.available_width() - 40.0)).lost_focus();
-        if ui.button("…").clicked() {
+        changed |= ui.add(egui::TextEdit::singleline(value).desired_width(ui.available_width() - 64.0)).lost_focus();
+        if crate::vts_style::button(ui, "…").clicked() {
             if let Some(p) = pick() {
                 *value = p.to_string_lossy().into_owned();
                 changed = true;
@@ -1143,12 +1146,12 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     let w = ui.available_width();
-                    let fsb = egui::Button::new(RichText::new(tr("На весь экран")).size(17.0).strong().color(Color32::WHITE)).fill(BLUE).rounding(9.0);
+                    let fsb = egui::Button::new(RichText::new(tr("На весь экран")).size(17.0).strong().color(Color32::WHITE)).fill(BLUE).rounding(3.0);
                     if ui.add_sized([w * 0.62, 40.0], fsb).clicked() {
                         let fs = app.window.fullscreen().is_some();
                         app.window.set_fullscreen(if fs { None } else { Some(winit::window::Fullscreen::Borderless(None)) });
                     }
-                    let q = egui::Button::new(RichText::new(tr("Закрыть\nпрограмму")).size(13.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(236, 96, 128)).rounding(9.0);
+                    let q = egui::Button::new(RichText::new(tr("Закрыть\nпрограмму")).size(13.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(236, 96, 128)).rounding(3.0);
                     if ui.add_sized([ui.available_width(), 40.0], q).clicked() {
                         app.actions.push(Action::Quit);
                     }
@@ -1176,7 +1179,7 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
             app.actions.push(Action::ReloadCore);
         }
         ui.horizontal(|ui| {
-            if ui.button(tr("Пересканировать папки")).clicked() {
+            if crate::vts_style::button(ui, tr("Пересканировать папки")).clicked() {
                 app.actions.push(Action::Rescan);
             }
             if let Some(c) = app.core {
@@ -1185,7 +1188,7 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
         });
         ui.horizontal(|ui| {
             ui.label(tr("Масштаб интерфейса"));
-            if ui.add(egui::Slider::new(&mut app.settings.ui_scale, 0.6..=2.0)).changed() {
+            if crate::vts_style::slider(ui, &mut app.settings.ui_scale, 0.6..=2.0).changed() {
                 ui.ctx().set_zoom_factor(app.settings.ui_scale);
             }
         });
@@ -1377,18 +1380,18 @@ fn vfx_edit_dialog(app: &mut App, ctx: &Context, idx: usize) {
                         match c.kind {
                             Kind::Float | Kind::Int => {
                                 let mut x = crate::vfx::get_f(v, c);
-                                let mut s = egui::Slider::new(&mut x, c.min..=c.max);
+                                let r = crate::vts_style::slider(ui, &mut x, c.min..=c.max);
                                 if c.kind == Kind::Int {
-                                    s = s.step_by(1.0);
+                                    x = x.round();
                                 }
-                                if ui.add(s).changed() {
+                                if r.changed() {
                                     v.insert(c.id.into(), Val::Num(x));
                                     changed = true;
                                 }
                             }
                             Kind::Bool => {
                                 let mut b = crate::vfx::get_f(v, c) > 0.5;
-                                if ui.checkbox(&mut b, "").changed() {
+                                if crate::ui::toggle(ui, &mut b, "").changed() {
                                     v.insert(c.id.into(), Val::Num(if b { 1.0 } else { 0.0 }));
                                     changed = true;
                                 }
@@ -1420,7 +1423,7 @@ fn vfx_edit_dialog(app: &mut App, ctx: &Context, idx: usize) {
                                         }
                                     }
                                 });
-                                if ui.small_button("…").on_hover_text(tr("Выбрать файл")).clicked() {
+                                if crate::vts_style::button(ui, "…").on_hover_text(tr("Выбрать файл")).clicked() {
                                     if let Some(p) = rfd::FileDialog::new().add_filter("PNG/JPG", &["png", "jpg", "jpeg"]).pick_file() {
                                         v.insert(c.id.into(), Val::Text(p.to_string_lossy().into_owned()));
                                         changed = true;
@@ -1441,7 +1444,7 @@ fn vfx_edit_dialog(app: &mut App, ctx: &Context, idx: usize) {
                 if ui.add_sized([150.0, 40.0], bk).clicked() {
                     back = true;
                 }
-                if ui.button(RichText::new(tr("Сбросить")).size(16.0)).clicked() {
+                if crate::vts_style::button(ui, RichText::new(tr("Сбросить")).size(16.0)).clicked() {
                     crate::vfx::reset_effect(&mut app.settings.vfx, def);
                     changed = true;
                 }
@@ -1941,39 +1944,15 @@ fn modal_dialog(app: &mut App, ctx: &Context) {
 
 /// Light-blue "selector" button followed by "↳ value" lines.
 pub(crate) fn picker(ui: &mut egui::Ui, label: &str, values: &[String], enabled: bool) -> egui::Response {
-    let fill = if enabled { Color32::from_rgb(120, 190, 250) } else { Color32::from_rgb(200, 226, 250) };
-    let r = ui.add_enabled(enabled, egui::Button::new(RichText::new(tr(label)).size(17.0).color(Color32::WHITE)).fill(fill).rounding(14.0).min_size(Vec2::new(320.0, 34.0)));
-    for (i, v) in values.iter().enumerate() {
-        let prefix = if i == 0 { "   » " } else { "        " };
-        ui.label(RichText::new(format!("{prefix}{}", tr(v))).size(18.0).color(Color32::from_rgb(150, 150, 160)));
-    }
-    r
+    crate::vts_style::picker(ui, label, values, enabled)
 }
 
 /// Pill slider with the value shown on a blue knob and Min/Max captions.
 pub(crate) fn pill_slider(ui: &mut egui::Ui, v: &mut f32, range: std::ops::RangeInclusive<f32>, left: &str, right: &str) -> egui::Response {
-    let w = ui.available_width();
-    let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(w, 32.0), Sense::click_and_drag());
-    let (lo, hi) = (*range.start(), *range.end());
-    let knob_w = 96.0;
-    if let Some(p) = resp.interact_pointer_pos() {
-        let t = ((p.x - rect.left() - knob_w / 2.0) / (rect.width() - knob_w)).clamp(0.0, 1.0);
-        let nv = (lo + t * (hi - lo)).round();
-        if nv != *v {
-            *v = nv;
-            resp.mark_changed();
-        }
-    }
-    let t = ((*v - lo) / (hi - lo)).clamp(0.0, 1.0);
-    let p = ui.painter();
-    p.rect_filled(rect, 16.0, Color32::from_rgb(236, 242, 250));
-    p.text(rect.left_center() + Vec2::new(12.0, 0.0), Align2::LEFT_CENTER, left, FontId::proportional(13.0), Color32::GRAY);
-    p.text(rect.right_center() - Vec2::new(12.0, 0.0), Align2::RIGHT_CENTER, right, FontId::proportional(13.0), Color32::GRAY);
-    let kx = rect.left() + t * (rect.width() - knob_w);
-    let knob = egui::Rect::from_min_size(Pos2::new(kx, rect.top()), Vec2::new(knob_w, rect.height()));
-    p.rect_filled(knob, 16.0, BLUE);
-    p.text(knob.center(), Align2::CENTER_CENTER, format!("{:.0}", v), FontId::proportional(19.0), Color32::WHITE);
-    resp
+    let lo = *range.start();
+    let r = crate::vts_style::slider_ex(ui, v, range, if left.is_empty() { " " } else { left }, if right.is_empty() { " " } else { right }, "", "");
+    let _ = lo;
+    r
 }
 
 const FACE_LINES: &[(usize, usize, bool)] = &[(0, 16, false), (17, 21, false), (22, 26, false), (27, 30, false), (31, 35, false), (36, 41, true), (42, 47, true), (48, 59, true), (60, 65, true)];
@@ -2068,7 +2047,7 @@ fn camera_preview(app: &mut App, ctx: &Context, e: f32) {
         card_frame().inner_margin(egui::Margin::same(8.0)).show(ui, |ui| {
             ui.set_width(454.0);
             ui.horizontal(|ui| {
-                let b = egui::Button::new(RichText::new(tr("Калибровать")).size(19.0).color(Color32::WHITE)).fill(BLUE).rounding(12.0);
+                let b = egui::Button::new(RichText::new(tr("Калибровать")).size(19.0).color(Color32::WHITE)).fill(BLUE).rounding(3.0);
                 if ui.add_sized([350.0, 46.0], b).clicked() {
                     app.actions.push(Action::Calibrate);
                 }
@@ -2129,11 +2108,11 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         toggle(ui, &mut app.settings.track_autostart, tr("Автозапуск камеры при старте"));
         ui.horizontal(|ui| {
             let w = (ui.available_width() - 12.0) / 2.0;
-            let on = egui::Button::new(RichText::new(tr("Включить камеру")).size(17.0).color(Color32::WHITE)).fill(if running { Color32::from_rgb(200, 226, 250) } else { BLUE }).rounding(14.0);
+            let on = egui::Button::new(RichText::new(tr("Включить камеру")).size(17.0).color(Color32::WHITE)).fill(if running { Color32::from_rgb(200, 226, 250) } else { BLUE }).rounding(3.0);
             if ui.add_sized([w, 36.0], on).clicked() {
                 app.actions.push(Action::StartTracker);
             }
-            let off = egui::Button::new(RichText::new(tr("Выключить камеру")).size(17.0).color(Color32::WHITE)).fill(if running { BLUE } else { Color32::from_rgb(200, 226, 250) }).rounding(14.0);
+            let off = egui::Button::new(RichText::new(tr("Выключить камеру")).size(17.0).color(Color32::WHITE)).fill(if running { BLUE } else { Color32::from_rgb(200, 226, 250) }).rounding(3.0);
             if ui.add_sized([w, 36.0], off).clicked() {
                 app.actions.push(Action::StopTracker);
             }
@@ -2148,26 +2127,26 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             ui.label(RichText::new(tr("Статус:")).size(18.0).strong());
             ui.label(RichText::new(status).size(18.0));
         });
-        if !app.settings.show_cam_preview && ui.button(tr("Показать превью трекинга")).clicked() {
+        if !app.settings.show_cam_preview && crate::vts_style::button(ui, tr("Показать превью трекинга")).clicked() {
             app.settings.show_cam_preview = true;
         }
     });
 
     section(ui, tr("Настройки отслеживания"), |ui| {
         ui.label(RichText::new(tr("Модель при потере отслеживания")).size(20.0));
-        ui.radio_value(&mut app.settings.lost_reset, false, RichText::new(tr("Остаётся в текущей позе")).size(17.0));
-        ui.radio_value(&mut app.settings.lost_reset, true, RichText::new(tr("Возвращается в исходную позу")).size(17.0));
+        crate::vts_style::radio(ui, &mut app.settings.lost_reset, false, &tr("Остаётся в текущей позе"));
+        crate::vts_style::radio(ui, &mut app.settings.lost_reset, true, &tr("Возвращается в исходную позу"));
         ui.add_space(8.0);
         let t = &mut app.settings.track;
         ui.label(RichText::new(tr("Синхронизация моргания")).size(20.0));
-        ui.radio_value(&mut t.blink_sync, 0, RichText::new(tr("Никогда")).size(17.0));
-        ui.radio_value(&mut t.blink_sync, 1, RichText::new(tr("Всегда")).size(17.0));
-        ui.radio_value(&mut t.blink_sync, 2, RichText::new(tr("При повороте головы")).size(17.0));
+        crate::vts_style::radio(ui, &mut t.blink_sync, 0, &tr("Никогда"));
+        crate::vts_style::radio(ui, &mut t.blink_sync, 1, &tr("Всегда"));
+        crate::vts_style::radio(ui, &mut t.blink_sync, 2, &tr("При повороте головы"));
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new(tr("Чувствительность моргания")).size(17.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new(RichText::new(tr("   Сброс   ")).size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(14.0)).clicked() {
+                if ui.add(egui::Button::new(RichText::new(tr("   Сброс   ")).size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(3.0)).clicked() {
                     t.sens = [50.0; 5];
                 }
             });
@@ -2215,7 +2194,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             toggle(ui, &mut app.settings.tobii_replace_eyes, tr("Заменить на отслеживание глаз Tobii")).on_hover_text(tr("Направление взгляда берётся из точки взгляда на экране"));
             toggle(ui, &mut app.settings.tobii_show_gaze, tr("Отображать точку взгляда"));
             ui.add_space(4.0);
-            if ui.add_sized([320.0, 34.0], egui::Button::new(RichText::new(tr("Калибровать")).size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(6.0)).on_hover_text(tr("Смотрите в центр экрана прямо и нажмите")).clicked() {
+            if ui.add_sized([320.0, 34.0], egui::Button::new(RichText::new(tr("Калибровать")).size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(3.0)).on_hover_text(tr("Смотрите в центр экрана прямо и нажмите")).clicked() {
                 app.actions.push(Action::CalibrateTobii);
             }
         });
@@ -2244,7 +2223,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         ui.label(RichText::new(tr("Частота кадров приложения")).size(20.0));
         let before = app.settings.fps;
         for m in FpsMode::ALL {
-            ui.radio_value(&mut app.settings.fps, m, RichText::new(m.label()).size(17.0));
+            crate::vts_style::radio(ui, &mut app.settings.fps, m, &m.label());
         }
         if before != app.settings.fps {
             app.gpu.set_vsync(app.settings.fps.vsync());
@@ -2258,7 +2237,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             ui.add(egui::DragValue::new(&mut ws[0]).range(320..=7680));
             ui.label("X");
             ui.add(egui::DragValue::new(&mut ws[1]).range(240..=4320));
-            if ui.add(egui::Button::new(RichText::new(tr("Установить разрешение")).size(16.0).color(Color32::WHITE)).fill(BLUE).rounding(14.0)).clicked() {
+            if ui.add(egui::Button::new(RichText::new(tr("Установить разрешение")).size(16.0).color(Color32::WHITE)).fill(BLUE).rounding(3.0)).clicked() {
                 let _ = app.window.request_inner_size(winit::dpi::PhysicalSize::new(ws[0], ws[1]));
             }
         });
@@ -2291,7 +2270,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
     section(ui, tr("Визуальные эффекты (VFX)"), |ui| {
         let n = crate::vfx::active_effects(&app.settings.vfx).len();
         ui.horizontal(|ui| {
-            if ui.add(egui::Button::new(RichText::new("?").size(18.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(60, 60, 66)).rounding(14.0)).clicked() {
+            if ui.add(egui::Button::new(RichText::new("?").size(18.0).strong().color(Color32::WHITE)).fill(Color32::from_rgb(60, 60, 66)).rounding(3.0)).clicked() {
                 app.settings.dismissed_info.retain(|d| *d != INFO_VFX_ALPHA && *d != INFO_VFX_ARTISTS);
                 open_info(app, INFO_VFX_ALPHA, None);
             }
@@ -2313,7 +2292,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             ui.label(RichText::new(tr("Пресеты")).size(19.0));
             ui.add_space(10.0);
             let btn = |ui: &mut egui::Ui, icon: &str, tip: &str| {
-                ui.add_sized([62.0, 40.0], egui::Button::new(RichText::new(icon).size(20.0).color(Color32::WHITE)).fill(BLUE).rounding(10.0)).on_hover_text(tip).clicked()
+                ui.add_sized([62.0, 40.0], egui::Button::new(RichText::new(icon).size(20.0).color(Color32::WHITE)).fill(BLUE).rounding(3.0)).on_hover_text(tip).clicked()
             };
             if btn(ui, "💾", "Сохранить текущие эффекты как пресет") {
                 app.ui.vfx_save_open = !app.ui.vfx_save_open;
@@ -2340,7 +2319,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut app.ui.vfx_preset_name).hint_text(tr("Название пресета")).desired_width(300.0));
                 let name = app.ui.vfx_preset_name.trim().replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-                if ui.add_enabled(!name.is_empty(), egui::Button::new(tr("Сохранить"))).clicked() {
+                if ui.add_enabled(!name.is_empty(), egui::Button::new(RichText::new(tr("Сохранить")).color(Color32::WHITE)).fill(crate::vts_style::BLUE).rounding(3.0)).clicked() {
                     let d = app.paths.data.join("vfx_presets");
                     let _ = std::fs::create_dir_all(&d);
                     let _ = d;
@@ -2358,7 +2337,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         ui.label(RichText::new(tr("Экран")).size(19.0));
         let mode = app.settings.light_mode;
         ui.horizontal(|ui| {
-            let off = egui::Button::new(RichText::new(tr("Выкл.")).size(17.0).color(Color32::WHITE)).fill(if mode == 0 { BLUE } else { Color32::from_rgb(150, 200, 245) }).rounding(14.0);
+            let off = egui::Button::new(RichText::new(tr("Выкл.")).size(17.0).color(Color32::WHITE)).fill(if mode == 0 { BLUE } else { Color32::from_rgb(150, 200, 245) }).rounding(3.0);
             if ui.add_sized([96.0, 34.0], off).clicked() {
                 app.actions.push(Action::SetLight(0, 0));
             }
@@ -2367,7 +2346,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
                 let exists = i < app.monitors.len();
                 let sel = mode == 1 && app.settings.light_monitor == i;
                 let col = if sel { BLUE } else if exists { Color32::from_rgb(150, 200, 245) } else { Color32::from_rgb(214, 228, 245) };
-                if ui.add_enabled(exists, egui::Button::new(RichText::new(format!("{}", i + 1)).size(17.0).color(Color32::WHITE)).fill(col).rounding(14.0).min_size(Vec2::new(40.0, 34.0))).on_hover_text(format!("Монитор {}", i + 1)).clicked() {
+                if ui.add_enabled(exists, egui::Button::new(RichText::new(format!("{}", i + 1)).size(17.0).color(Color32::WHITE)).fill(col).rounding(3.0).min_size(Vec2::new(40.0, 34.0))).on_hover_text(format!("Монитор {}", i + 1)).clicked() {
                     app.actions.push(Action::SetLight(1, i));
                 }
             }
@@ -2430,7 +2409,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             toggle(ui, &mut app.settings.light_items, tr("Наложение\nна элементы"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new(RichText::new(tr("   Сброс   ")).size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(14.0)).clicked() {
+                if ui.add(egui::Button::new(RichText::new(tr("   Сброс   ")).size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(3.0)).clicked() {
                     app.settings.light_brightness = 37.0;
                     app.settings.light_overlay = 40.0;
                     app.settings.light_smoothing = 3.0;
@@ -2495,7 +2474,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         ui.add_space(10.0);
         ui.label(RichText::new(tr("Протокол NDI")).size(22.0));
         ui.horizontal(|ui| {
-            if ui.add(egui::Button::new(RichText::new(tr("   Подробнее   ")).size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(14.0)).clicked() {
+            if ui.add(egui::Button::new(RichText::new(tr("   Подробнее   ")).size(17.0).color(Color32::WHITE)).fill(BLUE).rounding(3.0)).clicked() {
                 app.actions.push(Action::OpenUrl("https://ndi.video/tools/".into()));
             }
             if !crate::ndi::runtime_installed() {
@@ -2559,7 +2538,7 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
         let status = if rec { "Идёт запись… Двигайтесь перед камерой.".to_string() } else { app.rec_status.clone() };
         ui.label(RichText::new(status).size(17.0));
         if let (false, Some(p)) = (rec, &app.rec_last) {
-            if ui.button(tr("📁 Открыть папку с записями")).clicked() {
+            if crate::vts_style::button(ui, tr("📁 Открыть папку с записями")).clicked() {
                 if let Some(d) = p.parent() {
                     let _ = std::process::Command::new("explorer").arg(d).spawn();
                 }
@@ -2573,31 +2552,9 @@ fn camera_tab(app: &mut App, ui: &mut egui::Ui) {
 
 /// Pill slider whose knob shows a caption (e.g. "X" or "Сглаживание") and the value above it.
 fn pill_knob(ui: &mut egui::Ui, v: &mut f32, range: std::ops::RangeInclusive<f32>, left: &str, right: &str, knob_text: &str) -> egui::Response {
-    let w = ui.available_width();
-    let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(w, 50.0), Sense::click_and_drag());
-    let track = egui::Rect::from_min_max(Pos2::new(rect.left(), rect.top() + 18.0), rect.max);
-    let (lo, hi) = (*range.start(), *range.end());
-    let knob_w = 104.0;
-    if let Some(p) = resp.interact_pointer_pos() {
-        let t = ((p.x - track.left() - knob_w / 2.0) / (track.width() - knob_w)).clamp(0.0, 1.0);
-        let nv = (lo + t * (hi - lo)).round();
-        if nv != *v {
-            *v = nv;
-            resp.mark_changed();
-        }
-    }
-    let t = ((*v - lo) / (hi - lo)).clamp(0.0, 1.0);
-    let enabled = ui.is_enabled();
-    let p = ui.painter();
-    p.rect_filled(track, 16.0, Color32::from_rgb(236, 242, 250));
-    p.text(track.left_center() + Vec2::new(12.0, 0.0), Align2::LEFT_CENTER, left, FontId::proportional(13.0), Color32::GRAY);
-    p.text(track.right_center() - Vec2::new(12.0, 0.0), Align2::RIGHT_CENTER, right, FontId::proportional(13.0), Color32::GRAY);
-    let kx = track.left() + t * (track.width() - knob_w);
-    let knob = egui::Rect::from_min_size(Pos2::new(kx, track.top()), Vec2::new(knob_w, track.height()));
-    p.rect_filled(knob, 16.0, if enabled { BLUE } else { Color32::from_rgb(170, 210, 245) });
-    p.text(knob.center(), Align2::CENTER_CENTER, knob_text, FontId::proportional(15.0), Color32::WHITE);
-    p.text(Pos2::new(knob.center().x, rect.top() + 8.0), Align2::CENTER_CENTER, format!("{:.0}", v), FontId::proportional(14.0), Color32::GRAY);
-    resp
+    let r = crate::vts_style::slider_ex(ui, v, range, if left.is_empty() { " " } else { left }, if right.is_empty() { " " } else { right }, knob_text, "");
+    *v = v.round();
+    r
 }
 
 /// Small solid blue button with "» value" under it (used for Вход / Выход).
@@ -2771,7 +2728,7 @@ fn model_tab(app: &mut App, ui: &mut egui::Ui) {
             ui.add_space(6.0);
             ui.label(RichText::new(tr("Частота кадров физики Live2D")).size(20.0));
             for (v, l) in [(0, "Как в файле модели"), (30, "30 FPS"), (60, "60 FPS"), (120, "120 FPS"), (1, "Соответствует FPS приложения")] {
-                ui.radio_value(&mut av.cfg.physics_fps, v, RichText::new(l).size(17.0));
+                crate::vts_style::radio(ui, &mut av.cfg.physics_fps, v, &l);
             }
             ui.add_space(6.0);
             ui.label(RichText::new(tr("Сила физики")).size(20.0));

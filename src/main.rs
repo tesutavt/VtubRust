@@ -46,6 +46,7 @@ mod discord;
 mod net;
 mod ui_net;
 mod ui;
+mod vts_style;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
