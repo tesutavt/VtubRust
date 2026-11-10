@@ -41,6 +41,7 @@ mod settings;
 mod spout;
 mod stats;
 mod tracking;
+mod osf;
 mod perfect_sync;
 mod mocopi;
 mod discord;
