@@ -100,6 +100,7 @@ pub struct App {
     pub tracker: Option<Tracker>,
     /// VNet-style collab session.
     pub net: Option<crate::net::Session>,
+    pub core_dl: crate::core_dl::Downloader,
     pub mocopi: Option<crate::mocopi::Receiver>,
     pub mocopi_error: Option<String>,
     pub discord: Option<crate::discord::Presence>,
@@ -214,9 +215,13 @@ fn fix_paths(s: &mut Settings) {
         s.vts_dir = v.to_string_lossy().into_owned();
     }
     if !Path::new(&s.core_dll).is_file() {
-        let local = exe_dir.join("Live2DCubismCore.dll");
+        // Next to the exe, then the copy downloaded from live2d.com, then a VTube Studio install.
+        let local = exe_dir.join(crate::core_dl::file_name());
+        let downloaded = crate::core_dl::installed_path(&Paths::new().data);
         if local.is_file() {
             s.core_dll = local.to_string_lossy().into_owned();
+        } else if downloaded.is_file() {
+            s.core_dll = downloaded.to_string_lossy().into_owned();
         } else if let Some(v) = &vts {
             s.core_dll = v.join(r"VTube Studio_Data\Plugins\x86_64\Live2DCubismCore.dll").to_string_lossy().into_owned();
         }
@@ -314,6 +319,7 @@ impl App {
             bg_sprite: None,
             tracker: None,
             net: None,
+            core_dl: Default::default(),
             mocopi: None,
             mocopi_error: None,
             discord: None,
@@ -1708,6 +1714,10 @@ impl App {
 
         crate::net::pump(self, dt);
         crate::ui_net::pump_extras(self, dt);
+        if let Some(p) = self.core_dl.take_done() {
+            self.settings.core_dll = p.to_string_lossy().into_owned();
+            self.actions.push(Action::ReloadCore);
+        }
 
         // Simulation
         let physics = self.settings.physics;

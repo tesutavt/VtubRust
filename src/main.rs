@@ -22,6 +22,7 @@ mod ui_vts;
 mod updater;
 mod ui_model_extra;
 mod cubism;
+mod core_dl;
 mod formats;
 mod gpu;
 mod library;
