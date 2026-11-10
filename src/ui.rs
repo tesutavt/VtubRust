@@ -386,11 +386,41 @@ pub fn run(app: &mut App, ctx: &Context) {
     if let Some(e) = &app.core_error {
         egui::Area::new(egui::Id::new("core-err")).anchor(Align2::CENTER_TOP, [0.0, 12.0]).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.colored_label(Color32::RED, "Cubism Core не загружен");
-                ui.label(e);
-                ui.label(tr("Настройки → Общее → путь к Live2DCubismCore.dll"));
+                ui.set_max_width(520.0);
+                ui.colored_label(Color32::RED, tr("Cubism Core не загружен"));
+                ui.label(RichText::new(e).size(12.0).color(Color32::GRAY));
+                core_download(ui, &app.core_dl, &app.paths.data, &mut app.actions);
+                ui.label(RichText::new(tr("Или укажите свой файл: Настройки → Общее → путь к Live2DCubismCore.dll")).size(12.0).color(Color32::GRAY));
             });
         });
+    }
+}
+
+/// "Download Cubism Core" block: license notice, button, progress.
+pub(crate) fn core_download(ui: &mut egui::Ui, dl: &crate::core_dl::Downloader, data: &Path, actions: &mut Vec<Action>) {
+    use crate::core_dl::State;
+    ui.add_space(4.0);
+    ui.label(tr("Cubism Core — библиотека Live2D для отображения моделей. Её можно скачать с официального сайта Live2D (SDK, 25 МБ)."));
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new(tr("Скачивая, вы принимаете")).size(13.0));
+        if ui.link(RichText::new("Live2D Proprietary Software License").size(13.0)).clicked() {
+            actions.push(Action::OpenUrl(crate::core_dl::LICENSE_URL.into()));
+        }
+    });
+    match dl.state() {
+        State::Downloading(got, total) => {
+            let f = if total > 0 { got as f32 / total as f32 } else { 0.0 };
+            ui.add(egui::ProgressBar::new(f).text(format!("{:.1} / {:.1} MB", got as f64 / 1048576.0, total as f64 / 1048576.0)));
+            ui.ctx().request_repaint();
+        }
+        st => {
+            if let State::Failed(e) = &st {
+                ui.colored_label(Color32::from_rgb(220, 80, 80), e);
+            }
+            if crate::vts_style::wide(ui, tr("Скачать Cubism Core с live2d.com"), crate::vts_style::BLUE, 0.0, 34.0).clicked() {
+                dl.start(data);
+            }
+        }
     }
 }
 
@@ -1183,6 +1213,9 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
     section(ui, tr("Пути"), |ui| {
         let mut changed = path_row(ui, "Папка VTube Studio (модели, фоны, предметы):", &mut app.settings.vts_dir, || rfd::FileDialog::new().pick_folder());
         changed |= path_row(ui, "Live2DCubismCore.dll:", &mut app.settings.core_dll, || rfd::FileDialog::new().add_filter("DLL", &["dll"]).pick_file());
+        if app.core.is_none() {
+            core_download(ui, &app.core_dl, &app.paths.data, &mut app.actions);
+        }
         changed |= path_row(ui, "OpenSeeFace facetracker.exe:", &mut app.settings.tracker_exe, || rfd::FileDialog::new().add_filter("EXE", &["exe"]).pick_file());
         changed |= path_row(ui, "NVIDIA ExpressionApp.exe:", &mut app.settings.nv_exe, || rfd::FileDialog::new().add_filter("EXE", &["exe"]).pick_file());
         if changed {

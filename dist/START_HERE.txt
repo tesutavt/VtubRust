@@ -1,0 +1,47 @@
+VtubRust (rigrs): quick start
+=============================
+
+1. Unzip the archive into any folder and run rigrs.exe.
+   Language: Settings (gear) -> General -> "Язык / Language" -> English.
+
+2. Live2D core (Live2DCubismCore.dll):
+   - if VTube Studio (Steam) is installed, rigrs finds it automatically;
+   - otherwise press "Download Cubism Core from live2d.com" in the message at the top
+     (official Cubism SDK, about 25 MB; you accept the Live2D licence by downloading).
+
+3. Models: your VTube Studio models show up in the model strip (person button).
+   Add your own model folders with "Add model" or put them into
+   %APPDATA%\rigrs\Live2DModels.
+
+4. Camera: Settings -> camera tab -> "Start camera", then "Calibrate" while looking
+   straight at the camera. The face tracker is built in (a Rust port of OpenSeeFace,
+   its files are in this folder); VTube Studio is not needed for it.
+   Hand tracking and the Mediapipe tracker still use facetracker.exe from VTube Studio.
+   Other trackers: NVIDIA Broadcast (RTX), iPhone / Android with the VTube Studio app.
+
+5. Hotkeys: Settings -> clapperboard tab. A model's VTube Studio hotkeys are imported
+   automatically. The globe icon makes a hotkey work while the window is not focused.
+
+6. Twitch: Settings -> General -> Twitch settings -> type your channel name and turn on
+   "Connect to chat and activate". Twitch triggers are set per hotkey (Twitch icon).
+   Follows, rewards, shoutouts and ads need "Log in with Twitch" (your own Client ID
+   from dev.twitch.tv, client type Public).
+
+7. Plugins: Settings -> General -> Plugin API -> "Start API (plugins)".
+   VTube Studio plugins (VBridger too) connect to ws://localhost:8001.
+
+8. Collab: the purple buttons in the main menu. One person hosts, others join with the
+   host's address and the session password.
+
+9. OBS:
+   - Spout2 (transparent background): Settings -> Camera -> "Activate Spout2",
+     in OBS add a "Spout2 Capture" source (needs the Spout2 plugin for OBS);
+   - or the rigrsCam virtual camera (Windows 11): "Installation help" ->
+     "Open folder" -> run install.bat as administrator (once).
+
+Hide the UI with the eye button; bring it back with Esc or a double click on an empty spot.
+Mouse: left button moves, right button rotates, wheel zooms.
+Items: drop an item onto the model and it sticks to that spot.
+
+Not affiliated with VTube Studio / DenchiSoft. Live2D Cubism Core is the property of Live2D Inc.
+Third-party licences: THIRD_PARTY.txt. Source code: https://github.com/tesutavt/VtubRust

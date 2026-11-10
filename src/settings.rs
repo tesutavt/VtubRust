@@ -174,6 +174,8 @@ pub struct Settings {
     pub phone_port: u16,
     /// Local UDP port the phone sends to.
     pub phone_local_port: u16,
+    /// OpenSeeFace levels run on the built-in Rust tracker instead of `facetracker.exe`.
+    pub track_builtin: bool,
     /// Sony mocopi receiver.
     pub mocopi: bool,
     pub mocopi_port: u16,
@@ -329,6 +331,7 @@ impl Default for Settings {
             phone_port: 21412,
             phone_local_port: 21413,
             net: Default::default(),
+            track_builtin: true,
             mocopi: false,
             mocopi_port: crate::mocopi::DEFAULT_PORT,
             mocopi_show_params: false,

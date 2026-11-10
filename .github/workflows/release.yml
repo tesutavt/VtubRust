@@ -1,0 +1,78 @@
+# Builds the Windows release zip and publishes it as a GitHub release.
+#
+# Run it from the Actions tab ("Run workflow") or by pushing a tag `vX.Y.Z`.
+# The version comes from Cargo.toml, the notes from dist/RELEASE_NOTES.md.
+# A manual run publishes a pre-release by default: the auto-updater only offers full
+# releases, so test the build first and then untick "pre-release" on the release page.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: "Publish as pre-release (not offered by the auto-updater)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: rustup update stable && rustup default stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Tests
+        run: cargo test --release --bin rigrs
+
+      - name: Build
+        run: cargo build --release --workspace
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          $dir = "VtubRust-v$ver-windows-x64"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item target/release/rigrs.exe, target/release/rigrs_vcam.dll, LICENSE, README.md, dist/START_HERE.txt, dist/THIRD_PARTY.txt $dir
+          # Built-in face tracker: ONNX Runtime (MIT) and the default OpenSeeFace models (BSD-2-Clause).
+          $ort = "1.17.3"
+          Invoke-WebRequest "https://github.com/microsoft/onnxruntime/releases/download/v$ort/onnxruntime-win-x64-$ort.zip" -OutFile ort.zip
+          Expand-Archive ort.zip -DestinationPath ort
+          Copy-Item "ort/onnxruntime-win-x64-$ort/lib/onnxruntime.dll" $dir
+          Copy-Item "ort/onnxruntime-win-x64-$ort/LICENSE" "$dir/onnxruntime-LICENSE.txt"
+          foreach ($m in "lm_model3_opt.onnx", "mnv3_gaze32_split_opt.onnx", "mnv3_detection_opt.onnx") {
+            Invoke-WebRequest "https://raw.githubusercontent.com/emilianavt/OpenSeeFace/master/models/$m" -OutFile "$dir/$m"
+          }
+          Invoke-WebRequest "https://raw.githubusercontent.com/emilianavt/OpenSeeFace/master/LICENSE" -OutFile "$dir/OpenSeeFace-LICENSE.txt"
+          Compress-Archive -Path "$dir/*" -DestinationPath "$dir.zip"
+          "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ZIP=$dir.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP }}
+          path: ${{ env.ZIP }}
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $flags = @()
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ inputs.prerelease }}" -eq "true") { $flags += "--prerelease" }
+          gh release create "v$env:VERSION" $env:ZIP --title "VtubRust $env:VERSION" --notes-file dist/RELEASE_NOTES.md --target $env:GITHUB_SHA @flags
