@@ -215,6 +215,33 @@ fn face_frame_from_builtin(f: &crate::osf::tracker::Face, w: usize, h: usize) ->
     o
 }
 
+/// Puts a tracker child process into a job that Windows kills when this app exits, however
+/// it exits (crash, Task Manager, update restart). An orphaned tracker keeps the camera
+/// open, and the next start then fails with "tracker exited (exit code: 0)".
+#[cfg(windows)]
+fn tie_to_app(child: &Child) {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE};
+    static JOB: std::sync::OnceLock<isize> = std::sync::OnceLock::new();
+    let job = *JOB.get_or_init(|| unsafe {
+        let Ok(job) = CreateJobObjectW(None, None) else { return 0 };
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let _ = SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32);
+        // The handle is never closed: the job lives as long as this process.
+        job.0 as isize
+    });
+    if job != 0 {
+        unsafe {
+            let _ = AssignProcessToJobObject(HANDLE(job as *mut _), HANDLE(child.as_raw_handle() as *mut _));
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn tie_to_app(_child: &Child) {}
+
 fn empty_frame(kind: FaceKind) -> FaceFrame {
     FaceFrame {
         kind,
@@ -543,7 +570,9 @@ impl Tracker {
                 use std::os::windows::process::CommandExt;
                 cmd.creation_flags(0x0800_0000);
             }
-            Some(cmd.spawn().with_context(|| format!("cannot start {}", cfg.nv_exe.display()))?)
+            let child = cmd.spawn().with_context(|| format!("cannot start {}", cfg.nv_exe.display()))?;
+            tie_to_app(&child);
+            Some(child)
         } else {
             None
         };
@@ -635,14 +664,23 @@ impl Tracker {
                 // Some drivers deliver bottom-up frames without saying so: if no face shows
                 // up for a while, try the other orientation.
                 let (mut flip, mut misses) = (false, 0u32);
+                let dbg = std::env::var_os("RIGRS_HITCH").is_some();
+                let (mut stat, mut stat_t) = ((0u32, 0u32, 0.0f32, 0.0f32), Instant::now());
                 while !stop.load(Ordering::Relaxed) {
+                    let t_read = Instant::now();
                     let Some(mut f) = cam.read()? else { continue };
-                    // Frame rate limit: drop frames that come too early.
+                    if dbg {
+                        stat.0 += 1;
+                        stat.2 += t_read.elapsed().as_secs_f32();
+                    }
+                    // Frame rate limit: drop frames that come clearly too early. Camera frames
+                    // jitter by a few ms, so allow a quarter of a frame and keep a steady
+                    // schedule (rescheduling from "now" lost about a third of the frames).
                     let now = Instant::now();
-                    if now + Duration::from_millis(2) < next {
+                    if now + frame_time / 4 < next {
                         continue;
                     }
-                    next = now.max(next) + frame_time;
+                    next = if next + frame_time < now { now + frame_time } else { next + frame_time };
                     if flip {
                         let row = f.w * 3;
                         for y in 0..f.h / 2 {
@@ -650,7 +688,17 @@ impl Tracker {
                             a[y * row..(y + 1) * row].swap_with_slice(&mut b[..row]);
                         }
                     }
+                    let t_pred = Instant::now();
                     let face = tr.predict(&osf::tracker::Frame { w: f.w, h: f.h, rgb: &f.rgb })?;
+                    if dbg {
+                        stat.1 += 1;
+                        stat.3 += t_pred.elapsed().as_secs_f32();
+                        if stat_t.elapsed() >= Duration::from_secs(2) {
+                            eprintln!("TRK read {:.1}/s ({:.1} ms each)  predicted {:.1}/s ({:.1} ms each)  {}x{}", stat.0 as f32 / 2.0, stat.2 * 1000.0 / stat.0.max(1) as f32, stat.1 as f32 / 2.0, stat.3 * 1000.0 / stat.1.max(1) as f32, f.w, f.h);
+                            stat = (0u32, 0u32, 0.0f32, 0.0f32);
+                            stat_t = Instant::now();
+                        }
+                    }
                     let frame = match face {
                         Some(face) => {
                             misses = 0;
@@ -709,7 +757,9 @@ impl Tracker {
                 use std::os::windows::process::CommandExt;
                 cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
             }
-            Some(cmd.spawn().with_context(|| format!("cannot start {}", cfg.exe.display()))?)
+            let child = cmd.spawn().with_context(|| format!("cannot start {}", cfg.exe.display()))?;
+            tie_to_app(&child);
+            Some(child)
         } else {
             None
         };

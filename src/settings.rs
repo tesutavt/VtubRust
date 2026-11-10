@@ -176,6 +176,9 @@ pub struct Settings {
     pub phone_local_port: u16,
     /// OpenSeeFace levels run on the built-in Rust tracker instead of `facetracker.exe`.
     pub track_builtin: bool,
+    /// Use a VTube Studio install (its model / item / background library, Core, trackers).
+    /// Off after "Move library to rigrs": the install is not looked for any more.
+    pub use_vts: bool,
     /// Sony mocopi receiver.
     pub mocopi: bool,
     pub mocopi_port: u16,
@@ -332,6 +335,7 @@ impl Default for Settings {
             phone_local_port: 21413,
             net: Default::default(),
             track_builtin: true,
+            use_vts: true,
             mocopi: false,
             mocopi_port: crate::mocopi::DEFAULT_PORT,
             mocopi_show_params: false,
@@ -482,6 +486,9 @@ impl Settings {
     }
 
     pub fn vts_assets(&self) -> Option<PathBuf> {
+        if !self.use_vts || self.vts_dir.trim().is_empty() {
+            return None;
+        }
         let p = Path::new(&self.vts_dir).join("VTube Studio_Data").join("StreamingAssets");
         p.is_dir().then_some(p)
     }

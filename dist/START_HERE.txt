@@ -13,6 +13,11 @@ VtubRust (rigrs): quick start
    Add your own model folders with "Add model" or put them into
    %APPDATA%\rigrs\Live2DModels.
 
+   Leaving VTube Studio: Settings -> General -> "Working without VTube Studio".
+   Three steps (own Cubism Core, built-in tracker, "Move library to rigrs") copy your
+   models, items and backgrounds into the rigrs folder and keep all settings.
+   After that VTube Studio can be uninstalled.
+
 4. Camera: Settings -> camera tab -> "Start camera", then "Calibrate" while looking
    straight at the camera. The face tracker is built in (a Rust port of OpenSeeFace,
    its files are in this folder); VTube Studio is not needed for it.

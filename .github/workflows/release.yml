@@ -55,7 +55,8 @@ jobs:
           Expand-Archive ort.zip -DestinationPath ort
           Copy-Item "ort/onnxruntime-win-x64-$ort/lib/onnxruntime.dll" $dir
           Copy-Item "ort/onnxruntime-win-x64-$ort/LICENSE" "$dir/onnxruntime-LICENSE.txt"
-          foreach ($m in "lm_model3_opt.onnx", "mnv3_gaze32_split_opt.onnx", "mnv3_detection_opt.onnx") {
+          # All five quality levels, so the built-in tracker runs at whatever level is selected.
+          foreach ($m in "lm_model0_opt.onnx", "lm_model1_opt.onnx", "lm_model2_opt.onnx", "lm_model3_opt.onnx", "lm_model4_opt.onnx", "mnv3_gaze32_split_opt.onnx", "mnv3_detection_opt.onnx") {
             Invoke-WebRequest "https://raw.githubusercontent.com/emilianavt/OpenSeeFace/master/models/$m" -OutFile "$dir/$m"
           }
           Invoke-WebRequest "https://raw.githubusercontent.com/emilianavt/OpenSeeFace/master/LICENSE" -OutFile "$dir/OpenSeeFace-LICENSE.txt"

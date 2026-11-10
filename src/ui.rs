@@ -1210,12 +1210,13 @@ fn general_tab(app: &mut App, ui: &mut egui::Ui) {
             app.actions.push(Action::NewInstance);
         }
     });
+    crate::ui_vts::independence_card(app, ui);
     section(ui, tr("Пути"), |ui| {
-        let mut changed = path_row(ui, "Папка VTube Studio (модели, фоны, предметы):", &mut app.settings.vts_dir, || rfd::FileDialog::new().pick_folder());
-        changed |= path_row(ui, "Live2DCubismCore.dll:", &mut app.settings.core_dll, || rfd::FileDialog::new().add_filter("DLL", &["dll"]).pick_file());
-        if app.core.is_none() {
-            core_download(ui, &app.core_dl, &app.paths.data, &mut app.actions);
+        let mut changed = false;
+        if app.settings.use_vts {
+            changed |= path_row(ui, "Папка VTube Studio (модели, фоны, предметы):", &mut app.settings.vts_dir, || rfd::FileDialog::new().pick_folder());
         }
+        changed |= path_row(ui, "Live2DCubismCore.dll:", &mut app.settings.core_dll, || rfd::FileDialog::new().add_filter("DLL", &["dll"]).pick_file());
         changed |= path_row(ui, "OpenSeeFace facetracker.exe:", &mut app.settings.tracker_exe, || rfd::FileDialog::new().add_filter("EXE", &["exe"]).pick_file());
         changed |= path_row(ui, "NVIDIA ExpressionApp.exe:", &mut app.settings.nv_exe, || rfd::FileDialog::new().add_filter("EXE", &["exe"]).pick_file());
         if changed {

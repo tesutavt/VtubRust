@@ -65,6 +65,16 @@ pub fn find_models(data: &Path, osf_exe: &Path, model_type: i32) -> Option<PathB
     dirs.into_iter().find(|d| model_files(model_type).iter().all(|f| d.join(f).is_file()))
 }
 
+/// The quality level to run: the requested one, or the nearest level whose model is
+/// installed (a release zip or an old download may hold only some of them).
+pub fn find_models_any(data: &Path, osf_exe: &Path, model_type: i32) -> Option<(PathBuf, i32)> {
+    let mut order = vec![model_type];
+    for d in 1..=4 {
+        order.extend([model_type - d, model_type + d]);
+    }
+    order.into_iter().filter(|m| (0..=4).contains(m) || *m == model_type).find_map(|m| find_models(data, osf_exe, m).map(|p| (p, m)))
+}
+
 pub fn ready(data: &Path, osf_exe: &Path, model_type: i32) -> bool {
     find_runtime(data, osf_exe).is_some() && find_models(data, osf_exe, model_type).is_some()
 }

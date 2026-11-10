@@ -832,3 +832,89 @@ fn update_banner(app: &mut App, ctx: &Context) {
         });
     });
 }
+
+// ------------------------------------------------------------------ Work without VTube Studio
+
+fn check_row(ui: &mut egui::Ui, ok: bool, text: &str) {
+    ui.horizontal(|ui| {
+        let (mark, col) = if ok { ("✔", Color32::from_rgb(60, 160, 80)) } else { ("●", Color32::from_rgb(230, 150, 40)) };
+        ui.label(RichText::new(mark).size(18.0).color(col));
+        ui.add(egui::Label::new(RichText::new(tr(text)).size(17.0)).wrap());
+    });
+}
+
+/// General tab: what still comes from a VTube Studio install, and the buttons to replace it.
+pub fn independence_card(app: &mut App, ui: &mut egui::Ui) {
+    use crate::vts_import::State;
+    let own_core = app.own_core();
+    let core_ok = own_core.is_some();
+    let tracker_ok = crate::osf::assets::ready(&app.paths.data, std::path::Path::new(""), app.settings.track_quality);
+    let assets = app.settings.vts_assets();
+    let library_ok = assets.is_none();
+    section(ui, "Работа без VTube Studio", |ui| {
+        if core_ok && tracker_ok && library_ok {
+            check_row(ui, true, "rigrs больше не использует VTube Studio: её можно удалить.");
+            ui.label(RichText::new(tr("Отслеживание рук и трекер NVIDIA по-прежнему требуют файлов VTube Studio.")).size(13.0).weak());
+            return;
+        }
+        ui.label(RichText::new(tr("Здесь видно, что rigrs ещё берёт из установленной VTube Studio. После трёх шагов VTube Studio можно удалить.")).size(14.0).weak());
+        ui.add_space(4.0);
+
+        // 1. Cubism Core
+        check_row(ui, core_ok, if core_ok { "Cubism Core: своя копия" } else { "Cubism Core: используется копия из VTube Studio" });
+        if !core_ok {
+            crate::ui::core_download(ui, &app.core_dl, &app.paths.data, &mut app.actions);
+        }
+        ui.add_space(6.0);
+
+        // 2. Face tracker
+        check_row(ui, tracker_ok, if tracker_ok { "Трекер лица: встроенный" } else { "Трекер лица: нужны файлы встроенного трекера" });
+        if !tracker_ok {
+            use crate::osf::assets::State as T;
+            match app.tracker_dl.state() {
+                T::Downloading(what, got, total) => {
+                    let f = if total > 0 { got as f32 / total as f32 } else { 0.0 };
+                    ui.add(egui::ProgressBar::new(f).text(format!("{what}  {:.1} / {:.1} MB", got as f64 / 1048576.0, total as f64 / 1048576.0)));
+                    ui.ctx().request_repaint();
+                }
+                st => {
+                    if let T::Failed(e) = &st {
+                        ui.colored_label(Color32::from_rgb(220, 80, 80), e);
+                    }
+                    if wide_button(ui, "⬇", "Скачать трекер", ui.available_width().min(420.0)) {
+                        app.tracker_dl.start(&app.paths.data, std::path::Path::new(""), app.settings.track_quality);
+                    }
+                }
+            }
+        }
+        ui.add_space(6.0);
+
+        // 3. Library
+        check_row(ui, library_ok, if library_ok { "Модели, предметы и фоны: в папке rigrs" } else { "Модели, предметы и фоны: берутся из папки VTube Studio" });
+        if let Some(assets) = assets {
+            match app.vts_import.state() {
+                State::Copying(done, total, file) => {
+                    let f = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+                    ui.add(egui::ProgressBar::new(f).text(format!("{:.0} / {:.0} MB", done as f64 / 1048576.0, total as f64 / 1048576.0)));
+                    ui.label(RichText::new(file).size(12.0).weak());
+                    ui.ctx().request_repaint();
+                }
+                st => {
+                    if let State::Failed(e) = &st {
+                        ui.colored_label(Color32::from_rgb(220, 80, 80), e);
+                    }
+                    ui.label(RichText::new(tr("Файлы копируются в папку данных rigrs, в VTube Studio ничего не меняется и не удаляется. Положения моделей, горячие клавиши и остальные настройки сохраняются. В конце программа перезапустится.")).size(13.0).weak());
+                    ui.add_enabled_ui(core_ok, |ui| {
+                        if wide_button(ui, "📁", "Перенести библиотеку в rigrs", ui.available_width().min(420.0)) {
+                            app.save();
+                            app.vts_import.start(&assets, &app.paths.data);
+                        }
+                    });
+                    if !core_ok {
+                        ui.label(RichText::new(tr("Сначала скачайте Cubism Core (шаг 1).")).size(13.0).color(Color32::from_rgb(220, 70, 160)));
+                    }
+                }
+            }
+        }
+    });
+}

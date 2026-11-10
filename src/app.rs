@@ -101,6 +101,10 @@ pub struct App {
     /// VNet-style collab session.
     pub net: Option<crate::net::Session>,
     pub core_dl: crate::core_dl::Downloader,
+    /// "Move library to rigrs" copy job.
+    pub vts_import: crate::vts_import::Importer,
+    /// Library copied: on exit rewrite the saved paths (VTS assets folder) and restart.
+    detach_on_exit: Option<PathBuf>,
     pub tracker_dl: crate::osf::assets::Downloader,
     pub mocopi: Option<crate::mocopi::Receiver>,
     pub mocopi_error: Option<String>,
@@ -211,7 +215,8 @@ pub struct App {
 /// then the auto-detected VTube Studio install.
 fn fix_paths(s: &mut Settings) {
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_default();
-    let vts = Some(PathBuf::from(&s.vts_dir)).filter(|p| p.is_dir()).or_else(crate::settings::detect_vts_dir);
+    // "Work without VTube Studio": the install is neither used nor looked for.
+    let vts = if s.use_vts { Some(PathBuf::from(&s.vts_dir)).filter(|p| !s.vts_dir.trim().is_empty() && p.is_dir()).or_else(crate::settings::detect_vts_dir) } else { None };
     if let Some(v) = &vts {
         s.vts_dir = v.to_string_lossy().into_owned();
     }
@@ -283,7 +288,8 @@ impl App {
         if load_core_probe(&settings.core_dll).is_err() {
             let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_default();
             let mut cands = vec![exe_dir.join("Live2DCubismCore.dll")];
-            if let Some(v) = crate::settings::detect_vts_dir() {
+            cands.push(crate::core_dl::installed_path(&paths.data));
+            if let Some(v) = crate::settings::detect_vts_dir().filter(|_| settings.use_vts) {
                 cands.push(v.join(r"VTube Studio_Data\Plugins\x86_64\Live2DCubismCore.dll"));
                 settings.vts_dir = v.to_string_lossy().into_owned();
                 settings.tracker_exe = v.join(r"VTube Studio_Data\StreamingAssets\OpenSeeFaceTracker_v_1_20_2\binary\facetracker.exe").to_string_lossy().into_owned();
@@ -321,6 +327,8 @@ impl App {
             tracker: None,
             net: None,
             core_dl: Default::default(),
+            vts_import: Default::default(),
+            detach_on_exit: None,
             tracker_dl: Default::default(),
             mocopi: None,
             mocopi_error: None,
@@ -500,6 +508,12 @@ impl App {
                 _ => None,
             };
             app.ui_vts.pad_widget = std::env::var("RIGRS_DLG").map(|v| v == "pad").unwrap_or(false);
+            // Dev hook: start "Move library to rigrs" right away (end-to-end test).
+            if std::env::var("RIGRS_DLG").map(|v| v == "detach").unwrap_or(false) {
+                if let Some(assets) = app.settings.vts_assets() {
+                    app.vts_import.start(&assets, &app.paths.data);
+                }
+            }
             if std::env::var("RIGRS_DLG").map(|v| v == "items").unwrap_or(false) {
                 app.ui.settings_open = false;
                 app.ui.item_picker = true;
@@ -576,13 +590,17 @@ impl App {
     // ------------------------------------------------------------------ tracking
 
     /// Built-in tracker files when the current mode can use it (OpenSeeFace levels, face only).
-    pub fn builtin_tracker(&self) -> Option<(PathBuf, PathBuf)> {
+    /// Returns (ONNX Runtime, models folder, quality level to run). The level is the selected
+    /// one, or the nearest installed one.
+    pub fn builtin_tracker(&self) -> Option<(PathBuf, PathBuf, i32)> {
         let s = &self.settings;
         if !s.track_builtin || s.track_backend != tracking::backend::OPENSEEFACE || s.track_type != 0 {
             return None;
         }
         let exe = PathBuf::from(&s.tracker_exe);
-        Some((crate::osf::assets::find_runtime(&self.paths.data, &exe)?, crate::osf::assets::find_models(&self.paths.data, &exe, s.track_quality)?))
+        let rt = crate::osf::assets::find_runtime(&self.paths.data, &exe)?;
+        let (models, level) = crate::osf::assets::find_models_any(&self.paths.data, &exe, s.track_quality)?;
+        Some((rt, models, level))
     }
 
     /// Camera lists come from Media Foundation (true) or from `facetracker.exe` (false).
@@ -604,7 +622,7 @@ impl App {
             width: self.settings.cam_size[0],
             height: self.settings.cam_size[1],
             fps: self.settings.cam_fps,
-            model: self.settings.track_quality,
+            model: builtin.as_ref().map(|b| b.2).unwrap_or(self.settings.track_quality),
             threads: self.settings.track_threads,
             dcap: self.settings.cam_dcap,
             mediapipe: self.settings.track_backend == 1,
@@ -616,7 +634,7 @@ impl App {
             nv_cal: self.settings.nv_cal.clone(),
             phone_ip: self.settings.phone_ip.clone(),
             phone_port: self.settings.phone_port,
-            builtin,
+            builtin: builtin.map(|b| (b.0, b.1)),
         };
         match Tracker::start(&cfg) {
             Ok(t) => {
@@ -1676,8 +1694,20 @@ impl App {
         self.settings.save(&self.paths.settings);
     }
 
+    /// Our own Cubism Core (downloaded or next to the exe), if there is one.
+    pub fn own_core(&self) -> Option<PathBuf> {
+        let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_default();
+        [crate::core_dl::installed_path(&self.paths.data), exe_dir.join(crate::core_dl::file_name())].into_iter().find(|p| p.is_file())
+    }
+
     pub fn shutdown(&mut self) {
         self.save();
+        if let Some(assets) = self.detach_on_exit.take() {
+            let core = self.own_core();
+            if let Err(e) = crate::vts_import::detach_settings(&self.paths.settings, &assets, &self.paths.data, core.as_deref()) {
+                eprintln!("detach from VTube Studio failed: {e:#}");
+            }
+        }
         self.tracker = None;
         self.spout = None;
         self.vcam = None;
@@ -1762,7 +1792,20 @@ impl App {
         }
         if let Some(p) = self.core_dl.take_done() {
             self.settings.core_dll = p.to_string_lossy().into_owned();
+            if self.core.is_some() {
+                self.toast("Cubism Core скачан: своя копия будет использоваться со следующего запуска");
+            }
             self.actions.push(Action::ReloadCore);
+        }
+        if let Some((copied, kept)) = self.vts_import.take_done() {
+            // The scene still refers to the VTS files: finish through a restart, with the
+            // paths rewritten after the final save (see `shutdown`).
+            if let Some(a) = self.settings.vts_assets() {
+                eprintln!("library moved: {copied} files copied, {kept} already there");
+                self.detach_on_exit = Some(a);
+                self.restart_after_quit = true;
+                self.quit = true;
+            }
         }
 
         // Simulation

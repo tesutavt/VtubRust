@@ -20,6 +20,7 @@ mod ui_hotkeys;
 mod ui_items;
 mod ui_vts;
 mod updater;
+mod vts_import;
 mod ui_model_extra;
 mod cubism;
 mod core_dl;

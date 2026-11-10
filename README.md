@@ -84,7 +84,17 @@ The tracker runs as a separate process (OpenSeeFace / Mediapipe); its load is sh
 
 🎬 A demo video (about 50 seconds) is attached to the [latest release](https://github.com/tesutavt/VtubRust/releases/latest).
 
-## 🆕 dev: NVIDIA / phone tracking, VBridger, VNet-style collab
+## 🚪 0.5.0: works without VTube Studio
+
+rigrs no longer needs a VTube Studio install:
+
+- **Built-in face tracker**: a Rust port of [OpenSeeFace](https://github.com/emilianavt/OpenSeeFace) on ONNX Runtime, with camera capture through Windows Media Foundation. No `facetracker.exe`, no Python; all five quality levels ship in the release archive. If it cannot start and a `facetracker.exe` exists, rigrs falls back to it.
+- **Cubism Core download**: Settings → General → "Working without VTube Studio" downloads the official Cubism SDK from live2d.com (after you accept the Live2D licence) and takes the Core library from it.
+- **"Move library to rigrs"**: copies your models, items and backgrounds from VTube Studio into the rigrs data folder (`%APPDATA%\rigrs`). Model positions, hotkeys, ArtMesh settings, pinned items and the background keep working; nothing in VTube Studio is changed or deleted.
+- After these three steps VTube Studio can be uninstalled. Still tied to VTube Studio files: hand tracking and the Mediapipe tracker (`facetracker.exe`), and the NVIDIA Broadcast tracker (its Steam DLC).
+- **Auto-updater**: rigrs checks GitHub releases at startup, downloads the new version, replaces its files and restarts.
+
+## 🆕 0.4: NVIDIA / phone tracking, VBridger, VNet-style collab
 
 **Trackers** (Settings → Camera → Tracking quality):
 - **[RTX] NVIDIA Broadcast**: runs `ExpressionApp.exe` from VTube Studio's free *NVIDIA Broadcast Tracker* DLC (Windows, RTX 20xx+), the same way VTS does (UDP 9140, JSON with 53 ARKit-style expressions + head rotation). "Calibrate" also sends the NVIDIA neutral-face calibration; the coefficients are saved.
@@ -190,8 +200,9 @@ unzip it and run `rigrs.exe`.
 | What | Why | Where to get it |
 |---|---|---|
 | Windows 10/11 x64 | — | the virtual camera needs Windows 11 |
-| `Live2DCubismCore.dll` | loading `.moc3` (proprietary Live2D core) | an installed VTube Studio is found automatically; or the official [Cubism SDK for Native](https://www.live2d.com/en/sdk/download/native/): put the DLL next to `rigrs.exe` |
-| `facetracker.exe` | webcam tracking | taken from an installed VTube Studio or from [OpenSeeFace](https://github.com/emilianavt/OpenSeeFace/releases) (`OpenSeeFace` folder next to the exe) |
+| `Live2DCubismCore.dll` | loading `.moc3` (proprietary Live2D core, not shipped) | press "Download Cubism Core from live2d.com" in the app (official Cubism SDK, you accept the Live2D licence); an installed VTube Studio is also found automatically |
+| Face tracker | webcam tracking | built in (ONNX Runtime + OpenSeeFace models are in the archive) |
+| `facetracker.exe` | hand tracking and the Mediapipe tracker only | taken from an installed VTube Studio or from [OpenSeeFace](https://github.com/emilianavt/OpenSeeFace/releases) (`OpenSeeFace` folder next to the exe) |
 | NDI Tools | NDI output only | [ndi.video](https://ndi.video/tools/) |
 
 Paths can be changed in **Settings → General → Paths**.
@@ -251,11 +262,15 @@ VtubRust/
 - [x] Controller input
 - [x] Sound effects, VBAN
 - [x] VTS effect set, item system, ArtMesh settings, Cubism Editor API
-- [ ] Phone tracking (VTube Studio iPhone/Android app protocol)
-- [ ] Own multiplayer (collabs between rigrs users)
+- [x] Phone tracking (VTube Studio iPhone/Android app, "3rd Party PC Clients")
+- [x] NVIDIA Broadcast tracker, Perfect Sync / VBridger inputs
+- [x] Own multiplayer (collabs between rigrs users)
+- [x] Auto-updater from GitHub releases
+- [x] Discord, mocopi
+- [x] Built-in face tracker (Rust port of OpenSeeFace)
+- [x] Works without a VTube Studio install (Cubism Core download, library import)
+- [ ] Built-in hand tracking (still uses `facetracker.exe`)
 - [ ] Web items
-- [ ] Auto-updater from GitHub releases
-- [ ] Discord, mocopi
 
 ## 💜 Author
 
