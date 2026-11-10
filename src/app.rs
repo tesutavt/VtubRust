@@ -677,9 +677,20 @@ impl App {
             return;
         };
         t.poll();
-        if let Some(e) = t.error.lock().unwrap().clone() {
+        let (err, was_builtin) = (t.error.lock().unwrap().clone(), t.is_builtin());
+        if let Some(e) = err {
+            // The built-in tracker failed (camera, runtime): go back to facetracker.exe if there is one.
+            if was_builtin && Path::new(&self.settings.tracker_exe).is_file() {
+                self.settings.track_builtin = false;
+                self.settings.cam_dcap = -1;
+                self.toast(format!("{}: {e}", crate::i18n::tr("Встроенный трекер не запустился, включаю facetracker.exe")));
+                self.start_tracker();
+                self.save();
+                return;
+            }
             self.tracker_error = Some(e);
         }
+        let Some(t) = &mut self.tracker else { return };
         let nv_cal = t.nv_cal.lock().unwrap().take();
         let phone_hotkey = t.phone_hotkey.lock().unwrap().take();
         if let Some(c) = nv_cal {

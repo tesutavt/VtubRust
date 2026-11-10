@@ -1,6 +1,6 @@
 [package]
 name = "rigrs"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 description = "Lightweight Live2D (Cubism 4/5) face-tracked avatar viewer - educational, independent re-implementation"
 license = "MIT"

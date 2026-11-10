@@ -57,7 +57,8 @@ pub fn find_models(data: &Path, osf_exe: &Path, model_type: i32) -> Option<PathB
     if let Some(p) = std::env::var_os("RIGRS_OSF_MODELS") {
         dirs.push(PathBuf::from(p));
     }
-    dirs.extend([exe_dir().join("models"), exe_dir().join("OpenSeeFace").join("models"), tracker_dir(data).join("models")]);
+    // Release zips are flat (the updater copies plain files), so the exe folder itself counts.
+    dirs.extend([exe_dir(), exe_dir().join("models"), exe_dir().join("OpenSeeFace").join("models"), tracker_dir(data).join("models")]);
     if let Some(d) = osf_exe.parent() {
         dirs.push(d.join("models"));
     }

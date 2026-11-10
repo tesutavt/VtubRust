@@ -1,0 +1,14 @@
+Third-party components shipped with VtubRust (rigrs)
+====================================================
+
+ONNX Runtime (onnxruntime.dll)
+  Copyright (c) Microsoft Corporation. MIT License, see onnxruntime-LICENSE.txt.
+  https://github.com/microsoft/onnxruntime
+
+OpenSeeFace face tracking models (*.onnx) and the tracking algorithm rigrs ports to Rust
+  Copyright (c) 2019, Emiliana. BSD 2-Clause License, see OpenSeeFace-LICENSE.txt.
+  https://github.com/emilianavt/OpenSeeFace
+
+Not shipped: Live2D Cubism Core (Live2DCubismCore.dll), property of Live2D Inc.
+  rigrs downloads it from the official Cubism SDK after you accept the
+  Live2D Proprietary Software License, or uses the copy of a VTube Studio install.
