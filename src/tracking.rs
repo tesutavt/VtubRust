@@ -187,6 +187,34 @@ fn parse_mp(b: &[u8]) -> Option<FaceFrame> {
     Some(f)
 }
 
+/// ONNX Runtime is loaded once per process and kept (sessions borrow it).
+fn builtin_runtime(path: &Path) -> Result<&'static crate::osf::ort::Runtime> {
+    static RT: Mutex<Option<(PathBuf, &'static crate::osf::ort::Runtime)>> = Mutex::new(None);
+    let mut g = RT.lock().unwrap();
+    if let Some((_, rt)) = g.as_ref() {
+        return Ok(rt);
+    }
+    let rt: &'static crate::osf::ort::Runtime = Box::leak(Box::new(crate::osf::ort::Runtime::load(path)?));
+    *g = Some((path.to_path_buf(), rt));
+    Ok(rt)
+}
+
+/// Built-in tracker result → the same frame `facetracker.exe` packets are parsed into.
+fn face_frame_from_builtin(f: &crate::osf::tracker::Face, w: usize, h: usize) -> FaceFrame {
+    let mut o = empty_frame(FaceKind::OpenSeeFace);
+    o.success = f.success;
+    o.eye_open = f.eye_blink.unwrap_or([1.0, 1.0]);
+    o.euler = f.euler;
+    o.translation = f.translation;
+    for (d, s) in o.lms.iter_mut().zip(f.lms.iter()) {
+        *d = [s[1], s[0]];
+    }
+    o.features = f.features;
+    o.confidence = f.lms.iter().map(|l| l[2]).sum::<f32>() / 68.0;
+    o.size = [w as f32, h as f32];
+    o
+}
+
 fn empty_frame(kind: FaceKind) -> FaceFrame {
     FaceFrame {
         kind,
@@ -422,6 +450,8 @@ pub struct TrackerConfig {
     pub phone_ip: String,
     /// Port the phone app listens on (shown in the app, 21412 by default).
     pub phone_port: u16,
+    /// Built-in Rust tracker instead of `facetracker.exe`: (ONNX Runtime library, models folder).
+    pub builtin: Option<(PathBuf, PathBuf)>,
 }
 
 pub struct Tracker {
@@ -440,6 +470,7 @@ pub struct Tracker {
     pub phone_hotkey: Arc<Mutex<Option<i32>>>,
     backend: u8,
     camera: i32,
+    builtin: bool,
 }
 
 impl Tracker {
@@ -447,6 +478,7 @@ impl Tracker {
         match cfg.backend {
             backend::NVIDIA => Self::start_nvidia(cfg),
             backend::PHONE => Self::start_phone(cfg),
+            _ if cfg.builtin.is_some() && !cfg.hands && !cfg.mediapipe => Self::start_builtin(cfg),
             _ => Self::start_osf(cfg),
         }
     }
@@ -466,6 +498,7 @@ impl Tracker {
             phone_hotkey: Arc::new(Mutex::new(None)),
             backend: cfg.backend,
             camera: cfg.camera,
+            builtin: false,
         }
     }
 
@@ -582,6 +615,72 @@ impl Tracker {
 
     pub fn backend(&self) -> u8 {
         self.backend
+    }
+
+    /// Built-in tracker: camera capture and the OpenSeeFace port run on a thread of ours.
+    fn start_builtin(cfg: &TrackerConfig) -> Result<Tracker> {
+        use crate::osf;
+        let (ort_path, models) = cfg.builtin.clone().context("built-in tracker files are missing")?;
+        let rt = builtin_runtime(&ort_path)?;
+        let mut t = Self::new_shell(cfg, None);
+        t.builtin = true;
+        let (latest, stop, packets, error) = (t.latest.clone(), t.stop.clone(), t.packets.clone(), t.error.clone());
+        let (camera, mode, width, height, fps, model, threads) = (cfg.camera, (cfg.dcap >= 0).then_some(cfg.dcap as u32), cfg.width, cfg.height, cfg.fps, cfg.model, cfg.threads);
+        t.thread = Some(std::thread::Builder::new().name("tracking-builtin".into()).spawn(move || {
+            let run = || -> Result<()> {
+                let mut cam = osf::camera::Camera::open(camera, mode, width, height, fps)?;
+                let mut tr = osf::tracker::Tracker::new(rt, &models, cam.width, cam.height, model, threads)?;
+                let frame_time = Duration::from_secs_f32(1.0 / fps.clamp(5, 120) as f32);
+                let mut next = Instant::now();
+                // Some drivers deliver bottom-up frames without saying so: if no face shows
+                // up for a while, try the other orientation.
+                let (mut flip, mut misses) = (false, 0u32);
+                while !stop.load(Ordering::Relaxed) {
+                    let Some(mut f) = cam.read()? else { continue };
+                    // Frame rate limit: drop frames that come too early.
+                    let now = Instant::now();
+                    if now + Duration::from_millis(2) < next {
+                        continue;
+                    }
+                    next = now.max(next) + frame_time;
+                    if flip {
+                        let row = f.w * 3;
+                        for y in 0..f.h / 2 {
+                            let (a, b) = f.rgb.split_at_mut((f.h - 1 - y) * row);
+                            a[y * row..(y + 1) * row].swap_with_slice(&mut b[..row]);
+                        }
+                    }
+                    let face = tr.predict(&osf::tracker::Frame { w: f.w, h: f.h, rgb: &f.rgb })?;
+                    let frame = match face {
+                        Some(face) => {
+                            misses = 0;
+                            face_frame_from_builtin(&face, f.w, f.h)
+                        }
+                        None => {
+                            misses += 1;
+                            if misses % 45 == 0 {
+                                flip = !flip;
+                            }
+                            let mut e = empty_frame(FaceKind::OpenSeeFace);
+                            e.size = [f.w as f32, f.h as f32];
+                            e
+                        }
+                    };
+                    *latest.lock().unwrap() = Some(frame);
+                    packets.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(())
+            };
+            if let Err(e) = run() {
+                *error.lock().unwrap() = Some(format!("{e:#}"));
+            }
+        })?);
+        Ok(t)
+    }
+
+    /// True for the built-in tracker (no external process).
+    pub fn is_builtin(&self) -> bool {
+        self.builtin
     }
 
     fn start_osf(cfg: &TrackerConfig) -> Result<Tracker> {

@@ -6,3 +6,5 @@ pub mod ort;
 pub mod face3d;
 pub mod math;
 pub mod tracker;
+pub mod assets;
+pub mod camera;

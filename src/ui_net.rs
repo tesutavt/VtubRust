@@ -8,6 +8,9 @@ use crate::tracking::backend;
 
 /// Backend-specific settings shown under "Tracking quality" in the camera tab.
 pub fn tracker_extra(app: &mut App, ui: &mut egui::Ui, running: bool) {
+    if app.settings.track_backend == backend::OPENSEEFACE {
+        builtin_block(app, ui, running);
+    }
     match app.settings.track_backend {
         backend::PHONE => {
             ui.add_space(4.0);
@@ -1136,6 +1139,46 @@ pub fn pump_extras(app: &mut App, dt: f32) {
                 "Телефон не найден — включите «3rd Party PC Clients» в VTube Studio или введите IP вручную"
             }),
             None => app.toast("Найдено несколько телефонов — выберите нужный в списке"),
+        }
+    }
+}
+
+/// Camera tab: built-in tracker switch and its download.
+fn builtin_block(app: &mut App, ui: &mut egui::Ui, running: bool) {
+    use crate::osf::assets::{self, State};
+    ui.add_space(4.0);
+    let mut on = app.settings.track_builtin;
+    if ui.add_enabled_ui(!running, |ui| toggle(ui, &mut on, tr("Встроенный трекер (Rust, без facetracker.exe)"))).inner.changed() {
+        app.settings.track_builtin = on;
+        // Camera mode numbers differ between the two trackers.
+        app.settings.cam_dcap = -1;
+        app.save();
+    }
+    if !app.settings.track_builtin {
+        return;
+    }
+    if app.settings.track_type != 0 {
+        crate::vts_style::note(ui, "Отслеживание рук пока работает только через facetracker.exe из VTube Studio.");
+        return;
+    }
+    let exe = std::path::PathBuf::from(&app.settings.tracker_exe);
+    if assets::ready(&app.paths.data, &exe, app.settings.track_quality) {
+        return;
+    }
+    crate::vts_style::note(ui, "Нужны ONNX Runtime (MIT) и модели OpenSeeFace (BSD-2) — около 80 МБ, один раз.");
+    match app.tracker_dl.state() {
+        State::Downloading(what, got, total) => {
+            let f = if total > 0 { got as f32 / total as f32 } else { 0.0 };
+            ui.add(egui::ProgressBar::new(f).text(format!("{what}  {:.1} / {:.1} MB", got as f64 / 1048576.0, total as f64 / 1048576.0)));
+            ui.ctx().request_repaint();
+        }
+        st => {
+            if let State::Failed(e) = &st {
+                ui.colored_label(Color32::from_rgb(220, 80, 80), e);
+            }
+            if crate::vts_style::wide(ui, tr("Скачать трекер"), crate::vts_style::BLUE, 0.0, 32.0).clicked() {
+                app.tracker_dl.start(&app.paths.data, &exe, app.settings.track_quality);
+            }
         }
     }
 }

@@ -101,6 +101,7 @@ pub struct App {
     /// VNet-style collab session.
     pub net: Option<crate::net::Session>,
     pub core_dl: crate::core_dl::Downloader,
+    pub tracker_dl: crate::osf::assets::Downloader,
     pub mocopi: Option<crate::mocopi::Receiver>,
     pub mocopi_error: Option<String>,
     pub discord: Option<crate::discord::Presence>,
@@ -320,6 +321,7 @@ impl App {
             tracker: None,
             net: None,
             core_dl: Default::default(),
+            tracker_dl: Default::default(),
             mocopi: None,
             mocopi_error: None,
             discord: None,
@@ -573,8 +575,29 @@ impl App {
 
     // ------------------------------------------------------------------ tracking
 
+    /// Built-in tracker files when the current mode can use it (OpenSeeFace levels, face only).
+    pub fn builtin_tracker(&self) -> Option<(PathBuf, PathBuf)> {
+        let s = &self.settings;
+        if !s.track_builtin || s.track_backend != tracking::backend::OPENSEEFACE || s.track_type != 0 {
+            return None;
+        }
+        let exe = PathBuf::from(&s.tracker_exe);
+        Some((crate::osf::assets::find_runtime(&self.paths.data, &exe)?, crate::osf::assets::find_models(&self.paths.data, &exe, s.track_quality)?))
+    }
+
+    /// Camera lists come from Media Foundation (true) or from `facetracker.exe` (false).
+    pub fn cameras_builtin(&self) -> bool {
+        cfg!(windows) && self.settings.track_builtin && self.settings.track_backend == tracking::backend::OPENSEEFACE && self.settings.track_type == 0
+    }
+
     pub fn start_tracker(&mut self) {
         self.tracker = None;
+        let builtin = self.builtin_tracker();
+        let s = &self.settings;
+        if builtin.is_none() && s.track_builtin && s.track_backend == tracking::backend::OPENSEEFACE && s.track_type == 0 && !Path::new(&s.tracker_exe).is_file() {
+            self.tracker_error = Some(crate::i18n::tr("Нужны файлы встроенного трекера — нажмите «Скачать трекер» на вкладке камеры").to_string());
+            return;
+        }
         let cfg = TrackerConfig {
             exe: PathBuf::from(&self.settings.tracker_exe),
             camera: self.settings.camera,
@@ -593,6 +616,7 @@ impl App {
             nv_cal: self.settings.nv_cal.clone(),
             phone_ip: self.settings.phone_ip.clone(),
             phone_port: self.settings.phone_port,
+            builtin,
         };
         match Tracker::start(&cfg) {
             Ok(t) => {
@@ -606,13 +630,14 @@ impl App {
 
     pub fn refresh_cameras(&mut self) {
         let exe = PathBuf::from(&self.settings.tracker_exe);
-        if !exe.is_file() {
+        let builtin = self.cameras_builtin();
+        if !builtin && !exe.is_file() {
             return;
         }
         let slot = Arc::new(Mutex::new(None));
         let s2 = slot.clone();
         std::thread::spawn(move || {
-            *s2.lock().unwrap() = Some(tracking::list_cameras(&exe));
+            *s2.lock().unwrap() = Some(if builtin { crate::osf::camera::list() } else { tracking::list_cameras(&exe) });
         });
         self.cameras_job = Some(slot);
     }
@@ -622,8 +647,14 @@ impl App {
         let exe = PathBuf::from(&self.settings.tracker_exe);
         let slot = Arc::new(Mutex::new(None));
         let s2 = slot.clone();
+        let builtin = self.cameras_builtin();
         std::thread::spawn(move || {
-            *s2.lock().unwrap() = Some(tracking::list_caps(&exe, camera));
+            let caps = if builtin {
+                crate::osf::camera::modes(camera).into_iter().map(|m| tracking::CamCap { index: m.index as i32, width: m.width, height: m.height, fps_min: m.fps, fps_max: m.fps, format: m.format }).collect()
+            } else {
+                tracking::list_caps(&exe, camera)
+            };
+            *s2.lock().unwrap() = Some(caps);
         });
         self.caps_job = Some(slot);
     }
@@ -1714,6 +1745,10 @@ impl App {
 
         crate::net::pump(self, dt);
         crate::ui_net::pump_extras(self, dt);
+        if self.tracker_dl.take_done() {
+            self.toast("Встроенный трекер установлен");
+            self.actions.push(Action::StartTracker);
+        }
         if let Some(p) = self.core_dl.take_done() {
             self.settings.core_dll = p.to_string_lossy().into_owned();
             self.actions.push(Action::ReloadCore);
